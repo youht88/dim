@@ -1,7 +1,7 @@
-fs=require('fs')
-fft=require('./fft.js').fft
-random=require('./random.js').random
-Poly = requrie('./poly.js').Poly
+fs = require('fs')
+fft= require('./fft.js').fft
+Random = require('./random.js').Random
+Poly   = require('./poly.js').Poly
 Complex = require('./complex.js').Complex
 
 class ArrayBase{
