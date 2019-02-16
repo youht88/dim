@@ -2,6 +2,7 @@ fs=require('fs')
 Random = require('./random.js').Random
 Complex = require('./complex.js').Complex
 Poly = require('./poly.js').Poly
+NN = require('./nn.js').NN
 
 fft = require('./fft.js').fft
 
@@ -109,13 +110,12 @@ class Vector{
     if (typeof a=="number") return 
     if (this.shape.toString()!=a.shape.toString()) throw new Error(`形状(${this.shape})与形状(${a.shape})不一致`)
   }
-  ensureMatrix(...a){
-    a.map(x=>{if (x.ndim==2) throw new Error(`要求是2维矩阵,但是参数是(${x.ndim})维`)})
+  ensureMatrix(){
+    if (this.ndim!=2) throw new Error(`要求是2维矩阵,但是参数是${this.ndim}维`)
   }
-  ensureSquareMatrix(...a){
-    a.map(x=>{if (x.ndim!=2 || x.shape[0]!=x.shape[1]) 
-      throw new Error(`要求是方阵，但是参数形状是(${x.shape}),(${x.ndim})维`)
-    }) 
+  ensureSquareMatrix(){
+    if (this.ndim!=2 || this.shape[0]!=this.shape[1]) 
+      throw new Error(`要求是方阵，但是参数形状是(${this.shape}),维度是(${this.ndim})`)
   }
   ensureCanDot(a){
     if (typeof a =="number") return
@@ -134,7 +134,10 @@ class Vector{
 
   copy(){return this.toVector(this.value,this.dtype)}
   save(file){return fs.writeFileSync(file,JSON.stringify(this.value))}
-
+  
+  print(){
+    console.log(JSON.stringify(this.value))
+  }
   reshape(...d){
     if (Array.isArray(d[0])) d=d[0]
     let a=this.flatten().data
@@ -156,6 +159,17 @@ class Vector{
       p=[...t]
     }
     return this.toVector(t,this.dtype)
+  }
+  squeeze(){
+    //仅对维数为1的Vector进行降维
+    if (this.ndim==1) return this
+    let v = this.data.map(x=>{
+      if (x.ndim!=1 && x.shape[0]==1) x=x.data[0]
+      if (x.ndim!=1 && x instanceof Vector) return x.squeeze()
+      return x
+    })
+    if (v.length==1) v=v[0]
+    return new Vector(v)
   }
   flat_idx(indices){
     const shape = this.shape
@@ -318,12 +332,6 @@ class Vector{
        else return 0
       })
     )}
-  normal(N){
-    if (N==undefined) N=[0,1]
-    let [mu,sigma]=N
-    return this.sub(this.mean()).div(this.std()).mul(sigma).add(mu)
-  }
-
   _fun(axis=null,deep=0,ndim=0,method=null){
     if (axis==null){ //没指定轴
       let flatten=this.flatten()
@@ -339,45 +347,45 @@ class Vector{
       return this.data.map(x=>x._fun(null,0,0,method))
     }
     if (axis<ndim-2 && deep == axis){ //axis小于最后两个维度
-      return this.data.map((x,i)=>(x instanceof Vector)?x._fun(null,0,0,method):x)
+      return this.data.map((x,i)=>(deep<ndim-1)?x._fun(null,0,0,method):x)
     }
     let result = this.data.map((x,i)=>{ //递归到数据层
       if (i==0) deep++
-      return (x instanceof Vector)?x._fun(axis,deep,ndim,method):x 
+      return (deep<ndim-1)?x._fun(axis,deep,ndim,method):x 
     })
     return this.toVector(result)
   }
-  sum(axis=null,deep=0,ndim=0){
+  sum(axis=null){
     return this._fun(axis,0,0,(flatten)=>{
        return flatten.data.reduce((a,b)=>a+b)
     })
   }
-  max(axis=null,deep=0,ndim=0){
+  max(axis=null){
     return this._fun(axis,0,0,(flatten)=>{
        return flatten.data.reduce((a,b)=>a>b?a:b)
     })
   }
-  min(axis=null,deep=0,ndim=0){
+  min(axis=null){
     return this._fun(axis,0,0,(flatten)=>{
        return flatten.data.reduce((a,b)=>a<b?a:b)
     })
   }
-  argmax(axis=null,deep=0,ndim=0){
+  argmax(axis=null){
     return this._fun(axis,0,0,(flatten)=>{
       return flatten.data.indexOf(flatten.max())
     })
   }
-  argmin(axis=null,deep=0,ndim=0){
+  argmin(axis=null){
     return this._fun(axis,0,0,(flatten)=>{
       return flatten.data.indexOf(flatten.min())
     })
   }
-  mean(axis=null,deep=0,ndim=0){
+  mean(axis=null){
     return this._fun(axis,0,0,(flatten)=>{
       return flatten.data.reduce((a,b)=>a+b)/flatten.data.length
     })
   }
-  var(axis=null,deep=0,ndim=0){
+  var(axis=null){
     return this._fun(axis,0,0,(flatten)=>{
       let mean = flatten.mean()
       return flatten.data.map(x=>(x-mean)**2).reduce((a,b)=>a+b)/flatten.data.length
@@ -388,22 +396,29 @@ class Vector{
     if (typeof v == "number") return Math.sqrt(v)
     return this.toVector(v).sqrt()
   }
-  cov(axis=null,deep=0,ndim=0){
+  cov(axis=null){
     return this._fun(axis,0,0,(flatten)=>{
       let mean = flatten.mean()
       return flatten.data.map(x=>(x-mean)**2).reduce((a,b)=>a+b)/(flatten.data.length-1)
     })
   }
-  ptp(axis=null,deep=0,ndim=0){
+  ptp(axis=null){
     return this._fun(axis,0,0,(flatten)=>{
       return flatten.max() - flatten.min()
     })
   }
-  median(axis=null,deep=0,ndim=0){
+  median(axis=null){
     return this._fun(axis,0,0,(flatten)=>{
       let length=parseInt(flatten.data.length/2)
       if (flatten.data.length%2!=0) return (flatten.data[length]+flatten.data[length-1])/2 
       return flatten.data[length]
+    })
+  }
+  normal(axis=null,N){
+    if (N==undefined) N=[0,1]
+    let [mu,sigma]=N
+    return this._fun(axis,0,0,(flatten)=>{
+      return flatten.sub(flatten.mean()).div(flatten.std()).mul(sigma).add(mu)
     })
   }
 
@@ -429,34 +444,83 @@ class Vector{
       return c
     }))
   }
-  slice(p){
-    let data=[]
-    if (!Array.isArray(p)) p=[p]
-    let [s,t,o]=p
-    if (s==undefined) s=0
-    if (s<0) s=this.length + s
-    if (t==undefined) t=(s==0)?this.length:s+1
-    if (t<0) t=this.length + t
-    if (o==undefined) o=1
-    for (let i=s;i<t;i+=o){
-      data.push(this.data[i])
+  slice(...d){
+    if (!Array.isArray(d)) d=[d]
+    let v= new Vector([this])
+    for (let idx=0;idx<d.length;idx++){
+      v =v._slice(idx,0,0,(x)=>{
+        let p=d[idx]
+        x=x.data
+        let data=[]
+        if (!Array.isArray(p)) p=[p]
+        let [s,t,o]=p
+        let k=false
+        if (s==undefined) {s=0;k=true}
+        if (s<0) s=x.length + s
+        if (t==undefined) t=(s==0&&k)?x.length:s+1
+        if (t<0) t=x.length + t
+        if (t>x.length) t=x.length
+        if (o==undefined) o=1
+        for (let i=s;i<t;i+=o){
+          data.push(x[i])
+        }
+        //仅对最后的数值判断为一个值的时候才降低一维
+        if (data.length==1 && !(data[0] instanceof Vector)) data=data[0] 
+        return data
+      })
+      v= new Vector(v)
     }
-    return new Vector(data)
+    return v.squeeze()
   }
-  take(p){
+  _slice(axis=null,deep=0,ndim=0,method=null){
+    if (axis==null){ //没指定轴
+      if (method) return method(this)
+    }
+    if (!ndim) ndim=this.ndim
+    if (deep == axis){ //axis小于最后两个维度
+      return this.data.map((x,i)=>(deep<ndim-1)?x._slice(null,0,0,method):x)
+    }
+    let result = this.data.map((x,i)=>{ //递归到数据层
+      if (i==0) deep++
+      return (deep<ndim-1)?x._slice(axis,deep,ndim,method):x
+    })
+    return this.toVector(result)
+  }
+  take(axis=null,p){
     if (!Array.isArray(p)) p=[p]
-    return new Vector(p.map(n=>{
-       if (n>this.length-1) throw new Error(`${n} 超过向量边界`)
-       return this.data[n]
+    return this._take(axis,0,0,(x)=>{
+      return new Vector(p.map(n=>{
+        if (n>x.length-1) throw new Error(`${n} 超过向量边界`)
+        return x.data[n]
       }))
+    })
+  }
+  _take(axis=null,deep=0,ndim=0,method=null){
+    if (axis==null){ //没指定轴
+      if (method) return method(this)
+    }
+    if (!ndim) ndim=this.ndim
+    if (deep == axis){ //axis小于最后两个维度
+      return new Vector(this.data.map((x,i)=>x._take(null,0,0,method)))
+    }
+    let result = this.data.map((x,i)=>{ //递归到数据层
+      if (i==0) deep++
+      return (deep<ndim-1)?x._take(axis,deep,ndim,method):x
+    })
+    return this.toVector(result)
   }
   where(){}
   nonzero(){}
   
-  hstack(a){
-    a=new Vector(a)
+  hstack(a,deep=0,ndim=0){
+    if (!ndim) ndim=this.ndim
     if (this.shape.slice(0,-1).toString()!=a.shape.slice(0,-1).toString())
       throw new Error(`(${this.shape.slice(0,-1).toString()})和(${a.shape.slice(0,-1).toString()})不符合横向堆叠要确保横向形状一致的要求`)
+    let v= this.data.map((x,i)=>{
+        if (i==0) deep++
+        return deep<ndim - 1?x.hstack(a.data[i],deep,ndim):x.data.concat(a.data[i].data)
+      })
+    return new Vector(v)
   }
   vstack(a){
     a=new Vector(a)
@@ -464,14 +528,166 @@ class Vector{
       throw new Error(`(${this.shape.slice(1).toString()})和(${a.shape.slice(1).toString()})不符合纵向堆叠要确保纵向形状一致的要求`)
     return new Vector(this.value.concat(a.value),a.dtype)
   }
-  hsplit(m){}
-  vsplit(m){}
+  vsplit(m){
+    let n=[]
+    let matrix=[]
+    if (typeof m =="number"){
+      let range = this.shape[0] 
+      let fromIndex=0
+      let count = m
+      for(let idx=0;idx<count;idx++){
+        let end=Math.ceil(range * (idx+1) / count) - 1 + fromIndex
+        let start =Math.ceil( range * idx / count) +1 - 1 + fromIndex
+        //console.log(`${idx}:${start}-${end},有${end-start+1}个元素`)
+        matrix.push(this.slice([start,end+1]))
+       }
+    }else{
+      let start=0
+      matrix=m.map(end=>{
+        let temp = this.slice([start,end])
+        start = end
+        return temp
+      })
+      matrix.push(this.slice([start,this.shape[0]]))
+    }
+    return matrix
+  }
+  
+  hsplit(m){
+    let n=[]
+    let matrix=[]
+    if (typeof m =="number"){
+      let range = this.shape[this.ndim-1]
+      let fromIndex=0
+      let count = m
+      for(let idx=0;idx<count;idx++){
+        let end=Math.ceil(range * (idx+1) / count) - 1 + fromIndex
+        let start =Math.ceil( range * idx / count) +1 - 1 + fromIndex
+        //console.log(`${idx}:${start}-${end},有${end-start+1}个元素`)
+        matrix.push(this.slice([],[start,end+1]))
+       }
+    }else{
+      let start=0
+      matrix=m.map(end=>{
+        let temp = this.slice([],[start,end])
+        start = end
+        return temp
+      })
+      matrix.push(this.slice([],[start,this.shape[1]]))
+    }
+    return matrix  
+  }
+
   split(m,axis=1){
     if (axis==1) return this.hsplit(m)
     if (axis==0) return this.vsplit(m)
     throw new Error("必须制定axis为0-纵向分割，1-横向分割,默认axis=1")
   }
   pad(){}
+
+  //SquareMatrix function
+  lu(){//求三角阵
+    this.ensureMatrix()
+    let data = this.value
+    let row = this.shape[0]
+    let col = this.shape[1]
+    let s = (row < col)?row:col
+    for (let k=0;k<s;k++){
+      let x=1/data[k][k]
+      for (let i=k+1;i<row;i++){
+        data[i][k] = data[i][k] * x        
+      }
+      for (let i=k+1;i<row;i++){
+        for (let j=k+1;j<col;j++){
+          data[i][j] = data[i][j] - data[i][k]*data[k][j]
+        }
+      }
+    }
+    return new Vector(data)
+  }
+  det(permute,lu=true){//行列式求值
+    this.ensureSquareMatrix()
+    if (lu) {  //lu分块分解快速计算det
+      let x=1
+      let m=this.lu()
+      let row=m.shape[0]
+      for (let i=0;i<row;i++){
+        x=x*m.data[i].data[i]
+      }    
+      return x    
+    }
+    
+    let data=this.value
+    switch (row){
+      case 2:
+        return data[0][0]*data[1][1] - data[0][1]*data[1][0]
+      case 3:
+        return data[0][0]*data[1][1]*data[2][2] +
+               data[1][0]*data[2][1]*data[0][2] +
+               data[2][0]*data[0][1]*data[1][2] -
+               data[0][2]*data[1][1]*data[2][0] -
+               data[1][2]*data[2][1]*data[0][0] -
+               data[2][2]*data[0][1]*data[1][0]
+      default:
+        if (!permute){
+          let argN=[]
+          for(let i=0;i<row;i++){
+            argN.push(i)
+          }
+          permute = dim.permute(argN)
+        }
+        return permute.map(x=>{
+          let invert = dim.invertCount(x)
+          return x.split("").map((y,i)=>data[i][y])
+                            .reduce((x,y)=>x*y)*(-1)**invert
+        }).reduce((x,y)=>x+y)
+    }
+  }
+  adjoint(){ //伴随矩阵
+    this.ensureSquareMatrix()
+    let data=this.value
+    let arr=[]
+    let det=[]
+    let permute=[]
+    let row=this.shape[0]
+    let col=this.shape[1]
+    switch (row){
+      case 2:
+        arr[0]=data[1][1]*(-1)**(1+1)
+        arr[1]=data[0][1]*(-1)**(0+1)
+        arr[2]=data[1][0]*(-1)**(1+0)
+        arr[3]=data[0][0]*(-1)**(0+0)                                                 
+        return new Vector(arr).reshape(2,2)
+      default:
+        let temp=[]
+        for(let i=0;i<row-1;i++){temp.push(i)}
+        permute = dim.permute(temp)
+        for(let i=0;i<row;i++){
+          let m = [...data]
+          m.splice(i,1)
+          for(let j=0;j<col;j++){
+            let n = m.map(y=>{
+              let yy=[...y]
+              yy.splice(j,1);return yy
+            })
+           det.push(new Vector(n).det(permute)*(-1)**(i+j))
+           //console.log(i,j,n,det)
+          }
+        }
+        return new Vector(det).reshape(row,row).transpose()
+    }
+  }
+  inv(){//求逆矩阵
+    this.ensureSquareMatrix()
+    let det = this.det()
+    if (det==0) throw new Error("矩阵det=0,该矩阵不存在可逆矩阵")
+    return this.adjoint().divide(det)
+  }
+  solve(b){//行列式求值
+    this.ensureSquareMatrix()
+    b=new Vector(b).reshape(this.shape[0],1)
+    return this.inv().dot(b).value
+  }
 }
 class Dim{
   constructor(){
@@ -479,6 +695,7 @@ class Dim{
     this.Complex= Complex
     this.random = new Random(this)
     this.fft = fft
+    this.nn = new NN(this)
   }
   ensureVector(...a){
     let v = a.map(x=>{
@@ -504,6 +721,28 @@ class Dim{
   save(a,file){a=this.ensureVector(a);return a.save(file)}
   load(file){return new Vector(JSON.parse(fs.readFileSync(file,'utf8')))}
   
+  invertCount(str){//计算字符串逆序个数
+    let a = str.split("")
+    let c=0
+    while(a.length>1){
+      let b=a.splice(0,1)[0]
+      c+=a.map(x=>b>x?1:0).reduce((x,y)=>x+y)
+    }
+    return c
+  }
+  permute(arr){//求出数组元素的n!种组合
+    let data=[]
+    function inner(arr,s){
+      let a=[...arr]
+      a.map(x=>{
+        if (a.length>1) return inner(a.filter(y=>y!=x),s+x)
+        data.push(s+a[0])
+      })
+    }
+    inner(arr,"")
+    //console.log("permute:",arr.length,data.length)
+    return data
+  }
   arange(start,end,step,dtype){
     if (typeof end=="function"){
       dtype = end
@@ -592,6 +831,7 @@ class Dim{
       },dtype,[len,len],array)
   }
   reshape(a,...d){a=this.ensureVector(a);return a.reshape(...d)}
+  squeeze(a){a=this.ensureVector(a);return a.squeeze()}
   poly1d(a){
     let b=a
     if (Array.isArray(a) && Array.isArray(a[0])){
@@ -610,28 +850,28 @@ class Dim{
   roots(p){p=this.ensurePoly(p);return p.roots()}
   lagrange(points){return this.poly1d(points)}
   
-  sin(a){a=this.ensureVector(a);a.sin()}
-  cos(a){a=this.ensureVector(a);a.cos()}
-  tan(a){a=this.ensureVector(a);a.tan()}
-  asin(a){a=this.ensureVector(a);a.asin()}
-  acos(a){a=this.ensureVector(a);a.acos()}
-  atan(a){a=this.ensureVector(a);a.atan()}
-  asinh(a){a=this.ensureVector(a);a.asinh()}
-  acosh(a){a=this.ensureVector(a);a.acosh()}
-  atanh(a){a=this.ensureVector(a);a.atanh()}
-  sinh(a){a=this.ensureVector(a);a.sinh()}
-  cosh(a){a=this.ensureVector(a);a.cosh()}
-  tanh(a){a=this.ensureVector(a);a.tanh()}
-  log(a){a=this.ensureVector(a);a.log()}
-  log2(a){a=this.ensureVector(a);a.log2()}
-  log10(a){a=this.ensureVector(a);a.log10()}
-  exp(a){a=this.ensureVector(a);a.exp()}
-  sqrt(a){a=this.ensureVector(a);a.sqrt()}
-  square(a){a=this.ensureVector(a);a.square()}
-  pow(a,n){a=this.ensureVector(a);a.pow(n)}
-  floor(a){a=this.ensureVector(a);a.floor()}
-  ceil(a){a=this.ensureVector(a);a.ceil()}
-  around(a,n){a=this.ensureVector(a);a.around(n)}
+  sin(a){a=this.ensureVector(a);return a.sin()}
+  cos(a){a=this.ensureVector(a);return a.cos()}
+  tan(a){a=this.ensureVector(a);return a.tan()}
+  asin(a){a=this.ensureVector(a);return a.asin()}
+  acos(a){a=this.ensureVector(a);return a.acos()}
+  atan(a){a=this.ensureVector(a);return a.atan()}
+  asinh(a){a=this.ensureVector(a);return a.asinh()}
+  acosh(a){a=this.ensureVector(a);return a.acosh()}
+  atanh(a){a=this.ensureVector(a);return a.atanh()}
+  sinh(a){a=this.ensureVector(a);return a.sinh()}
+  cosh(a){a=this.ensureVector(a);return a.cosh()}
+  tanh(a){a=this.ensureVector(a);return a.tanh()}
+  log(a){a=this.ensureVector(a);return a.log()}
+  log2(a){a=this.ensureVector(a);return a.log2()}
+  log10(a){a=this.ensureVector(a);return a.log10()}
+  exp(a){a=this.ensureVector(a);return a.exp()}
+  sqrt(a){a=this.ensureVector(a);return a.sqrt()}
+  square(a){a=this.ensureVector(a);return a.square()}
+  pow(a,n){a=this.ensureVector(a);return a.pow(n)}
+  floor(a){a=this.ensureVector(a);return a.floor()}
+  ceil(a){a=this.ensureVector(a);return a.ceil()}
+  around(a,n){a=this.ensureVector(a);return a.around(n)}
  
   add(a,b){[a,b]=this.ensureVector(a,b);return a.add(b)}
   sub(a,b){[a,b]=this.ensureVector(a,b);return a.sub(b)}
@@ -657,11 +897,7 @@ class Dim{
   
   sort(a){a=this.ensureVector(a);return a.sort(b)}
 
-  normal(N){
-    if (N==undefined) N=[0,1]
-    let [mu,sigma]=N
-    return this.sub(this.mean()).div(this.std()).mul(sigma).add(mu)
-  }
+  normal(a,N){a=this.ensureVector(a);return a.normal(N)}
   
   sum(a,axis=null){a=this.ensureVector(a);return a.sum(axis)}
   mean(a,axis=null){a=this.ensureVector(a);return a.mean(axis)}
@@ -685,17 +921,9 @@ class Dim{
   
   clip(a,m,n){a=this.ensureVector(a);return a.clip(m,n)}
 
-  slice(a,...k){
-    a=this.ensureVector(a)
-    if (a instanceof Vector) return a.slice(k[0])
-    if (a instanceof Matrix) return a.slice(k[0],k[1])
-  }
+  slice(a,...k){a=this.ensureVector(a);return a.slice(...k)}
+  take(a,axis,p){a=this.ensureVector(a);return a.take(axis,p)}
   
-  take(a,p,axis){
-    a=this.ensureVector(a)
-    if (a instanceof Vector) return a.take(p)
-    if (a instanceof Matrix) return a.take(p,axis)
-  }
   where(){}
   nonzero(){}
   
@@ -723,3 +951,4 @@ class Dim{
   }
 }
 exports.dim = new Dim()
+exports.Vector = Vector

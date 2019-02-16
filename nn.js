@@ -1,16 +1,20 @@
 np = require('./numpy.js').np
-dim = require('./dim.js').dim
 
 class NN{
-  constructor(){
-    this.random=new Random(np)
+  constructor(dim){
+    this.dim = dim
+    this.Vector = dim.Vector
+    this.random=new Random(dim)
   }
   //Classification Function
   softmax(a){
-    a=np.ensureVector(a);
-    let exp = np.exp(a)
-    let sum = exp.sum()
-    return new Vector(a.data.map((x,i)=>exp.data[i]/sum))
+    a=dim.ensureVector(a);
+    let exp = dim.exp(a)
+    let sum = exp.sum()      
+    return new this.Vector(a.data.map((x,i)=>{
+      if (x instanceof this.Vector) return this.softmax(x)
+      return exp.data[i]/sum
+    }))
   }
   crossEntropy(a,y){
     [a,y]=np.ensureNdarray(a,y)
@@ -26,42 +30,47 @@ class NN{
 
   //Activation Function
   relu(a){
-    a=np.ensureNdarray(a);
-    if (a instanceof Matrix)
-      return new Matrix(a.data.map(x=>np.nn.relu(x)))
-    return new Vector(a.data.map(x=>x<=0?0:x))
+    a=dim.ensureVector(a);
+    return new this.Vector(a.data.map((x,i)=>{
+      if (x instanceof this.Vector) return this.relu(x)
+      return x<=0?0:x
+    }))
   }
   relu6(a){
-    a=np.ensureNdarray(a);
-    if (a instanceof Matrix)
-      return new Matrix(a.data.map(x=>np.nn.relu6(x)))
-    return new Vector(a.data.map(x=>x<=0?0:(x>6?6:x)))
+    a=np.ensureVector(a);
+    return new this.Vector(a.data.map((x,i)=>{
+      if (x instanceof this.Vector) return this.relu6(x)
+      return x<=0?0:(x>6?6:x)
+    }))
   }
   softplus(a){
-    a=np.ensureNdarray(a);
-    if (a instanceof Matrix)
-      return new Matrix(a.data.map(x=>np.nn.softplus(x)))
-    return new Vector(a.data.map(x=>Math.log(Math.exp(x)+1)))
+    a=np.ensureVector(a);
+    return new this.Vector(a.data.map((x,i)=>{
+      if (x instanceof this.Vector) return this.softplus(x)
+      return Math.log(Math.exp(x)+1)
+    }))
   }
   sigmoid(a){
-    a=np.ensureNdarray(a);
-    if (a instanceof Matrix)
-      return new Matrix(a.data.map(x=>np.nn.sigmoid(x)))
-    return new Vector(a.data.map(x=>1/(1+Math.exp(-x))))
+    a=np.ensureVector(a);
+    return new this.Vector(a.data.map((x,i)=>{
+      if (x instanceof this.Vector) return this.softplus(x)
+      return 1/(1+Math.exp(-x))
+    }))
   }
   tanh(a){
-    a=np.ensureNdarray(a);
+    a=np.ensureVector(a);
     //also equal tanh=sinhx/conhx=(Math.exp(x)-Math.exp(-x))/(Math.exp(x)+Math.exp(-x))
-    if (a instanceof Matrix)
-      return new Matrix(a.data.map(x=>np.nn.tanh(x)))
-    return new Vector(a.data.map(x=>Math.tanh(x)))
+    return new this.Vector(a.data.map((x,i)=>{
+      if (x instanceof this.Vector) return this.softplus(x)
+      return Math.tanh(x)
+    }))
   }
   tanhDeriv(a){
-    a=np.ensureNdarray(a);
+    a=np.ensureVector(a);
     return  a.tanh().square().neg().add(1)
   }
   sigmoidDeriv(a){
-    a=np.ensureNdarray(a);
+    a=np.ensureVector(a);
     return this.sigmoid(a).mul((this.sigmoid(a).neg().add(1)))
   }
   dropout(a,keep){
@@ -100,4 +109,4 @@ class NN{
   
 }
 
-exports.nn = new NN()
+exports.NN = NN
