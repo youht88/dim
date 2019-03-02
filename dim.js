@@ -3,8 +3,8 @@ Random = require('./random.js').Random
 Complex = require('./complex.js').Complex
 Poly = require('./poly.js').Poly
 NN = require('./nn.js').NN
-
 fft = require('./fft.js').fft
+autograd = require('./autograd.js')
 
 class Vector{
   constructor(object,dtype=Float32Array){
@@ -22,6 +22,11 @@ class Vector{
     this.data = this.ensureArray(object)
 
     this.shape=this.getShape()
+    
+    //grad
+    this.requiresGrad=false
+    this.grad=null
+    this.gradFn=null //new dim.nn.grad.Constant(this)
   }
   ensureArray(data){
     if (this.dtype == Complex){
@@ -66,10 +71,20 @@ class Vector{
     }
     return i
   }
-  get T(){return this.transpose()}
+  get T(){
+    let rst = this.transpose()
+    return this.setGradFn(rst,"T")
+  }
   
   get value(){
     return this.data.map((x,i)=>(x instanceof Vector)?x.value:x)
+  }
+  fill(n){
+    this.data.map((x,i)=>{
+      if (x instanceof Vector) return x.fill(n)
+      this.data[i]=n
+    })
+    return this
   }
   cast(dtype){
     if (typeof dtype == "string" ){
@@ -104,14 +119,43 @@ class Vector{
   }
   toVector(a,dtype){
     if (a instanceof Vector) return a
+    if (typeof a == "number") return a
     return new Vector(a,dtype)
   }
-  ensureSameShape(a){
-    if (typeof a=="number") return 
-    if (this.shape.toString()!=a.shape.toString()) throw new Error(`形状(${this.shape})与形状(${a.shape})不一致`)
+  broadcast(n){
+    if (!(typeof n=="number")) throw new Error("参数必须是数字")
+    let a=[]
+    for (let i=0;i<this.size;i++){
+      a.push(n)
+    }
+    if (this.ndim==1) return new Vector(a)
+    return new Vector(a).reshape(this.shape)
   }
+  get isUnit(){return (this.shape.toString()=='1')} 
+  isNumber(a){return (typeof a=="number")}
+  isComplex(a){return (a instanceof Complex)}
+  
+  ensureSameShape(a){
+    if (this.isNumber(a) || a.isUnit || this.isComplex(a)) return a
+    if (this.shape.toString()!=a.shape.toString()) {
+      console.log(this.value)
+      console.log(a.value)
+      throw new Error(`形状(${this.shape})与形状(${a.shape})不一致`)
+    }
+    return a
+  }
+  ensure1D(){
+    if (this.ndim!=1) throw new Error(`要求是1维矩阵,但是参数是${this.ndim}维`)
+    return true
+  }
+  ensure2D(){return this.ensureMatrix()}
   ensureMatrix(){
     if (this.ndim!=2) throw new Error(`要求是2维矩阵,但是参数是${this.ndim}维`)
+    return true
+  }
+  ensure3D(){
+    if (this.ndim!=3) throw new Error(`要求是3维矩阵,但是参数是${this.ndim}维`)
+    return true
   }
   ensureSquareMatrix(){
     if (this.ndim!=2 || this.shape[0]!=this.shape[1]) 
@@ -122,7 +166,11 @@ class Vector{
     if (this.ndim!=2 && this.ndim!=1) throw new Error(`参数是(${a.ndim})维,仅支持一、二维`)
     if (this.ndim==1 && a.ndim!=1) throw new Error(`要求是一维向量，但是参数是(${a.ndim})维`)
     if (this.ndim==2 && a.ndim!=2) throw new Error(`要求是二维向量，但是参数是(${a.ndim})维`)
-    if (this.ndim==2 && this.shape[1]!=a.shape[0]) throw new Error(`(${this.shape})和(${a.shape})形状不符合要求`)
+    if (this.ndim==2 && this.shape[1]!=a.shape[0]) {
+      console.log("this:",this.value)
+      console.log("a:",a.value)
+      throw new Error(`(${this.shape})和(${a.shape})形状不符合要求`)
+    }
   }
   
   flatten(item){
@@ -142,6 +190,7 @@ class Vector{
     if (Array.isArray(d[0])) d=d[0]
     let a=this.flatten().data
     let t,p=[],plen=0
+    if (d.length==1) return this.toVector(a,this.dtype) //如果一维直接返回
     plen=d[d.length - 1]
     if (this.size!=d.reduce((a,b)=>a*b)) 
       throw new Error(`尺寸为(${this.size})的数组无法匹配形状(${d})`)
@@ -171,7 +220,7 @@ class Vector{
     if (v.length==1) v=v[0]
     return new Vector(v)
   }
-  flat_idx(indices){
+  flatIdx(indices){
     const shape = this.shape
 
     if( indices.length != shape.length ) throw new Error(`Multi-index [${indices}] does not have expected length of ${shape.length}.`);
@@ -189,6 +238,9 @@ class Vector{
     }
     return flat_idx;
   }
+  dimIdx(indices){
+    return [1,1]
+  }
   transpose(deep=0,ndim){
     /*if (!ases) ases=[...this.shape].reverse()
     let set = new Set(axes)
@@ -196,8 +248,8 @@ class Vector{
     */
     if (!ndim) ndim=this.ndim
     if (deep==ndim - 2){
-      let T = this.value.reduce((a,b)=>
-         a.map((x,i)=>x[0]!=undefined?x.concat(b[i]):[x].concat(b[i])))
+      let T = this.value.reduce((a,b)=>a.map((x,i)=>x[0]!=undefined?x.concat(b[i]):[x].concat(b[i])))
+      if (!Array.isArray(T[0])) T=T.map(x=>[x])   
       if (ndim==2) return this.toVector(T)
       return T
     }
@@ -207,70 +259,187 @@ class Vector{
     })
     return this.toVector(result)
   }
-
-  sin(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.sin():Math.sin(x)))}
-  cos(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.cos():Math.cos(x)))}
-  tan(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.tan():Math.tan(x)))}
-  asin(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.asin():Math.asin(x)))}
-  acos(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.acos():Math.acos(x)))}
-  atan(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.atan():Math.atan(x)))}
-  asinh(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.asinh():Math.asinh(x)))}
-  acosh(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.acosh():Math.acosh(x)))}
-  atanh(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.atanh():Math.atanh(x)))}
-  sinh(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.sinh():Math.sinh(x)))}
-  cosh(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.cosh():Math.cosh(x)))}
-  tanh(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.tanh():Math.tanh(x)))}
-  log(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.log():Math.log(x)))}
-  log2(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.log2():Math.log2(x)))}
-  log10(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.log10():Math.log10(x)))}
-  exp(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.exp():Math.exp(x)))}
-  sqrt(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.sqrt():Math.sqrt(x)))}
-  square(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.square():Math.pow(x,2)))}
-  pow(n){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.pow(n):Math.pow(x,n)))}
-  floor(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.floor():Math.floor(x)))}
-  ceil(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.ceil():Math.ceil(x)))}
+  setGradFn(t,a,opStr){
+    if (opStr==undefined) {
+      opStr=a
+      a=null
+    }
+    if (this.requiresGrad || (a && a.requiresGrad)){
+      t.requiresGrad=true
+      let leftFn,rightFn
+      leftFn=(this.gradFn)?this.gradFn:new autograd.Constant(this)
+      rightFn=(a!=null)?((a.gradFn)?a.gradFn:new autograd.Constant(a)):null
+      t.gradFn=autograd.Operate.wrapper(leftFn,rightFn,opStr)
+    }
+    return t   
+  }
+  radians(){
+    let rst = new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.randians():x/180*Math.PI))
+    return this.setGradFn(rst,"randians")
+  }
+  sin(){
+    let rst = new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.sin():Math.sin(x)))
+    return this.setGradFn(rst,"sin")
+  }
+  cos(){
+    let rst = new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.cos():Math.cos(x)))
+    return this.setGradFn(rst,"cos")
+  }
+  tan(){
+    let rst = new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.tan():Math.tan(x)))
+    return this.setGradFn(rst,"tan")
+  }
+  asin(){
+    let rst = new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.asin():Math.asin(x)))
+    return this.setGradFn(rst,"asin")
+  }
+  acos(){
+    let rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.acos():Math.acos(x)))
+    return this.setGradFn(rst,"acos")
+  }
+  atan(){
+    let rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.atan():Math.atan(x)))
+    return this.setGradFn(rst,"atan")
+  }
+  asinh(){
+    let rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.asinh():Math.asinh(x)))
+    return this.setGradFn(rst,"asinh")
+  }
+  acosh(){
+    let rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.acosh():Math.acosh(x)))
+    return this.setGradFn(rst,"acosh")
+  }
+  atanh(){
+    let rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.atanh():Math.atanh(x)))
+    return this.setGradFn(rst,"atanh")
+  }
+  sinh(){
+    let rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.sinh():Math.sinh(x)))
+    return this.setGradFn(rst,"sinh")
+  }
+  cosh(){
+    let rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.cosh():Math.cosh(x)))
+    return this.setGradFn(rst,"cosh")
+  }
+  tanh(){
+    let rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.tanh():Math.tanh(x)))
+    return this.setGradFn(rst,"tanh")
+  }
+  log(){
+    let rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.log():Math.log(x)))
+    return this.setGradFn(rst,"log")
+  }
+  log2(){
+    let rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.log2():Math.log2(x)))
+    return this.setGradFn(rst,"log2")
+  }
+  log10(){
+    let rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.log10():Math.log10(x)))
+    return this.setGradFn(rst,"log10")
+  }
+  exp(){
+    let rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.exp():Math.exp(x)))
+    return this.setGradFn(rst,"exp")
+  }
+  sqrt(){
+    let rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.sqrt():Math.sqrt(x)))
+    return this.setGradFn(rst,"sqrt")
+  }
+  square(){
+    let rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.square():Math.pow(x,2)))
+    return this.setGradFn(rst,"square")
+  }
+  pow(n){
+    let rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.pow(n):Math.pow(x,n)))
+    return this.setGradFn(rst,n,"pow")
+  }
+  floor(){
+    let rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.floor():Math.floor(x)))
+    return this.setGradFn(rst,"floor")
+  }
+  ceil(){
+    let rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.ceil():Math.ceil(x)))
+    return this.setGradFn(rst,"ceil")
+  }
   around(n){return new Vector(this.data.map((x,i)=>{
       if (x instanceof Vector) return x.around(n)
       let a=10**n
       return Math.round(x*a)/a
     }))
   }
-
+  abs(){
+    let rst=new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.abs():Math.abs(x)))
+    return this.setGradFn(rst,"abs")
+  }
   add(a){
-    this.ensureSameShape(a)
-    if (this.dtype == Complex)
-      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.add(a.data?a.data[i]:a):x.add(a.data?a.data[i]:a)))
-    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.add(a.data?a.data[i]:a):x+(a.data?a.data[i]:a)))
+    a=this.ensureSameShape(a)
+    let rst
+    let n=undefined 
+    if (a.isUnit) n=a.data[0]
+    else if (this.isNumber(a)) n=a
+    if (this.dtype == Complex){
+      rst = new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.add(n==undefined?a.data[i]:n):x.add(n==undefined?a.data[i]:n)))
+    }else{
+      rst =new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.add(n==undefined?a.data[i]:n):x+(n==undefined?a.data[i]:n)))
+    }
+    return this.setGradFn(rst,a,"add")
   }
   sub(a){
-    this.ensureSameShape(a)
-    if (this.dtype == Complex)
-      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.sub(a.data?a.data[i]:a):x.sub(a.data?a.data[i]:a)))
-    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.sub(a.data?a.data[i]:a):x-(a.data?a.data[i]:a)))
+    a=this.ensureSameShape(a)
+    let rst
+    let n=undefined 
+    if (a.isUnit) n=a.data[0]
+    else if (this.isNumber(a)) n=a
+    if (this.dtype == Complex){
+      rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.sub(n==undefined?a.data[i]:n):x.sub(n==undefined?a.data[i]:n)))
+    }else{
+      rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.sub(n==undefined?a.data[i]:n):x-(n==undefined?a.data[i]:n)))
+    }
+    return this.setGradFn(rst,a,"sub")
   }
   mul(a){
-    this.ensureSameShape(a)
-    if (this.dtype == Complex)
-      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.mul(a.data?a.data[i]:a):x.mul(a.data?a.data[i]:a)))
-    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.mul(a.data?a.data[i]:a):x*(a.data?a.data[i]:a)))
+    a=this.ensureSameShape(a)
+    let rst
+    let n=undefined 
+    if (a.isUnit) n=a.data[0]
+    else if (this.isNumber(a)) n=a
+    if (this.dtype == Complex){
+      rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.mul(n==undefined?a.data[i]:n):x.mul(n==undefined?a.data[i]:n)))
+    }else{
+      rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.mul(n==undefined?a.data[i]:n):x*(n==undefined?a.data[i]:n)))
+    }
+    return this.setGradFn(rst,a,"mul")
   }
   div(a){
-    this.ensureSameShape(a)
-    if (this.dtype == Complex)
-      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.div(a.data?a.data[i]:a):x.div(a.data?a.data[i]:a)))
-    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.div(a.data?a.data[i]:a):x/(a.data?a.data[i]:a)))
+    a=this.ensureSameShape(a)
+    let rst
+    let n=undefined 
+    if (a.isUnit) n=a.data[0]
+    else if (this.isNumber(a)) n=a
+    if (this.dtype == Complex){
+      rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.div(n==undefined?a.data[i]:n):x.div(n==undefined?a.data[i]:n)))
+    }else{
+      rst= new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.div(n==undefined?a.data[i]:n):x/(n==undefined?a.data[i]:n)))
+    }
+    return this.setGradFn(rst,a,"div")
   }
   power(a){
-    this.ensureSameShape(a)
+    a=this.ensureSameShape(a)
+    let n=undefined 
+    if (a.isUnit) n=a.data[0]
+    else if (this.isNumber(a)) n=a
     if (this.dtype == Complex)
-      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.power(a.data?a.data[i]:a):x.power(a.data?a.data[i]:a)))
-    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.power(a.data?a.data[i]:a):x**(a.data?a.data[i]:a)))
+      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.power(n==undefined?a.data[i]:n):x.power(n==undefined?a.data[i]:n)))
+    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.power(n==undefined?a.data[i]:n):x**(n==undefined?a.data[i]:n)))
   }
   mod(a){
-    this.ensureSameShape(a)
+    a=this.ensureSameShape(a)
+    let n=undefined 
+    if (a.isUnit) n=a.data[0]
+    else if (this.isNumber(a)) n=a
     if (this.dtype == Complex)
-      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.mod(a.data?a.data[i]:a):x.mod(a.data?a.data[i]:a)))
-    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.mod(a.data?a.data[i]:a):x%(a.data?a.data[i]:a)))
+      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.mod(n==undefined?a.data[i]:n):x.mod(n==undefined?a.data[i]:n)))
+    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.mod(n==undefined?a.data[i]:n):x%(n==undefined?a.data[i]:n)))
   }
   subtract(x){return this.sub(x)}
   multiply(x){return this.mul(x)}
@@ -281,45 +450,66 @@ class Vector{
   sign(){return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.sign():Math.sign(x)))}
 
   gt(a){
-    this.ensureSameShape(a)
+    a=this.ensureSameShape(a)
+    let n=undefined 
+    if (a.isUnit) n=a.data[0]
+    else if (this.isNumber(a)) n=a
     if (this.dtype == Complex)
-      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.gt(a.data?a.data[i]:a):x.gt(a.data?a.data[i]:a)))
-    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.gt(a.data?a.data[i]:a):x>(a.data?a.data[i]:a)?true:false),Boolean)
+      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.gt(n==undefined?a.data[i]:n):x.gt(n==undefined?a.data[i]:n)))
+    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.gt(n==undefined?a.data[i]:n):x>(n==undefined?a.data[i]:n)?true:false),Boolean)
   }
   gte(a){
-    this.ensureSameShape(a)
+    a=this.ensureSameShape(a)
+    let n=undefined 
+    if (a.isUnit) n=a.data[0]
+    else if (this.isNumber(a)) n=a
     if (this.dtype == Complex)
-      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.gte(a.data?a.data[i]:a):x.gte(a.data?a.data[i]:a)))
-    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.gte(a.data?a.data[i]:a):x>=(a.data?a.data[i]:a)?true:false),Boolean)
+      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.gte(n==undefined?a.data[i]:n):x.gte(n==undefined?a.data[i]:n)))
+    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.gte(n==undefined?a.data[i]:n):x>=(n==undefined?a.data[i]:n)?true:false),Boolean)
   }
   lt(a){
-    this.ensureSameShape(a)
+    a=this.ensureSameShape(a)
+    let n=undefined 
+    if (a.isUnit) n=a.data[0]
+    else if (this.isNumber(a)) n=a
     if (this.dtype == Complex)
-      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.lt(a.data?a.data[i]:a):x.lt(a.data?a.data[i]:a)))
-    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.lt(a.data?a.data[i]:a):x<(a.data?a.data[i]:a)?true:false),Boolean)
+      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.lt(n==undefined?a.data[i]:n):x.lt(n==undefined?a.data[i]:n)))
+    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.lt(n==undefined?a.data[i]:n):x<(n==undefined?a.data[i]:n)?true:false),Boolean)
   }
   lte(a){
-    this.ensureSameShape(a)
+    a=this.ensureSameShape(a)
+    let n=undefined 
+    if (a.isUnit) n=a.data[0]
+    else if (this.isNumber(a)) n=a
     if (this.dtype == Complex)
-      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.lte(a.data?a.data[i]:a):x.lte(a.data?a.data[i]:a)))
-    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.lte(a.data?a.data[i]:a):x<=(a.data?a.data[i]:a)?true:false),Boolean)
+      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.lte(n==undefined?a.data[i]:n):x.lte(n==undefined?a.data[i]:n)))
+    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.lte(n==undefined?a.data[i]:n):x<=(n==undefined?a.data[i]:n)?true:false),Boolean)
   }
   eq(a){
-    this.ensureSameShape(a)
+    a=this.ensureSameShape(a)
+    let n=undefined 
+    if (a.isUnit) n=a.data[0]
+    else if (this.isNumber(a)) n=a
     if (this.dtype == Complex)
-      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.eq(a.data?a.data[i]:a):x.eq(a.data?a.data[i]:a)))
-    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.eq(a.data?a.data[i]:a):x=(a.data?a.data[i]:a)?true:false),Boolean)
+      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.eq(n==undefined?a.data[i]:n):x.eq(n==undefined?a.data[i]:n)))
+    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.eq(n==undefined?a.data[i]:n):x=(n==undefined?a.data[i]:n)?true:false),Boolean)
   }
   ne(a){
-    this.ensureSameShape(a)
+    a=this.ensureSameShape(a)
+    let n=undefined 
+    if (a.isUnit) n=a.data[0]
+    else if (this.isNumber(a)) n=a
     if (this.dtype == Complex)
-      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.ne(a.data?a.data[i]:a):x.ne(a.data?a.data[i]:a)))
-    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.ne(a.data?a.data[i]:a):x!=(a.data?a.data[i]:a)?true:false),Boolean)
+      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.ne(n==undefined?a.data[i]:n):x.ne(n==undefined?a.data[i]:n)))
+    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.ne(n==undefined?a.data[i]:n):x!=(n==undefined?a.data[i]:n)?true:false),Boolean)
   }
   close(a){
-    this.ensureSameShape(a)
+    a=this.ensureSameShape(a)
+    let n=undefined 
+    if (a.isUnit) n=a.data[0]
+    else if (this.isNumber(a)) n=a
     if (this.dtype == Complex)
-      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.close(a.data?a.data[i]:a):x.close(a.data?a.data[i]:a)))
+      return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.close(n==undefined?a.data[i]:n):x.close(n==undefined?a.data[i]:n)))
     return new Vector(this.data.map((x,i)=>{
            let temp=a.data?a.data[i]:a
            if (x instanceof Vector) return x.close(temp)
@@ -341,7 +531,8 @@ class Vector{
     if (axis==ndim-2 && deep==ndim - 2){ //axis为纵轴
       let T=new Vector(this.value.reduce((a,b)=>
          a.map((x,i)=>x[0]!=undefined?x.concat(b[i]):[x].concat(b[i]))))
-      return T.data.map(x=>x._fun(null,0,0,method))
+      let rst = T.data.map(x=>x._fun(null,0,0,method))
+      return dim.ensureVector(rst).T
     }
     if (axis==ndim-1 && deep==ndim - 2){ //axis为横轴
       return this.data.map(x=>x._fun(null,0,0,method))
@@ -356,40 +547,64 @@ class Vector{
     return this.toVector(result)
   }
   sum(axis=null){
-    return this._fun(axis,0,0,(flatten)=>{
+    let rst=  this.toVector(this._fun(axis,0,0,(flatten)=>{
        return flatten.data.reduce((a,b)=>a+b)
-    })
+    }))
+    if (axis==null && this.requiresGrad){
+      rst = new Vector([rst])
+      rst.requiresGrad=true
+      rst.gradFn=grad.Operate.wrapper(this.gradFn,null,"sum")
+    }
+    return rst
   }
   max(axis=null){
-    return this._fun(axis,0,0,(flatten)=>{
+    let rst = this.toVector(this._fun(axis,0,0,(flatten)=>{
        return flatten.data.reduce((a,b)=>a>b?a:b)
-    })
+    }))
+    if (axis==null && this.requiresGrad){
+      rst = new Vector([rst])
+      rst.requiresGrad=true
+      rst.gradFn=grad.Operate.wrapper(this.gradFn,null,"max")
+    }
+    return rst
   }
   min(axis=null){
-    return this._fun(axis,0,0,(flatten)=>{
+    let rst = this.toVector(this._fun(axis,0,0,(flatten)=>{
        return flatten.data.reduce((a,b)=>a<b?a:b)
-    })
+    }))
+    if (axis==null && this.requiresGrad){
+      rst = new Vector([rst])
+      rst.requiresGrad=true
+      rst.gradFn=grad.Operate.wrapper(this.gradFn,null,"min")
+    }
+    return rst
   }
   argmax(axis=null){
-    return this._fun(axis,0,0,(flatten)=>{
+    return this.toVector(this._fun(axis,0,0,(flatten)=>{
       return flatten.data.indexOf(flatten.max())
-    })
+    }))
   }
   argmin(axis=null){
-    return this._fun(axis,0,0,(flatten)=>{
+    return this.toVector(this._fun(axis,0,0,(flatten)=>{
       return flatten.data.indexOf(flatten.min())
-    })
+    }))
   }
   mean(axis=null){
-    return this._fun(axis,0,0,(flatten)=>{
+    let rst = this.toVector(this._fun(axis,0,0,(flatten)=>{
       return flatten.data.reduce((a,b)=>a+b)/flatten.data.length
-    })
+    }))
+    if (axis==null && this.requiresGrad){
+      rst = new Vector([rst])
+      rst.requiresGrad=true
+      rst.gradFn=grad.Operate.wrapper(this.gradFn,null,"mean")
+    }
+    return rst
   }
   var(axis=null){
-    return this._fun(axis,0,0,(flatten)=>{
+    return this.toVector(this._fun(axis,0,0,(flatten)=>{
       let mean = flatten.mean()
       return flatten.data.map(x=>(x-mean)**2).reduce((a,b)=>a+b)/flatten.data.length
-    })
+    }))
   }
   std(axis=null){
     let v = this.var(axis)
@@ -397,29 +612,39 @@ class Vector{
     return this.toVector(v).sqrt()
   }
   cov(axis=null){
-    return this._fun(axis,0,0,(flatten)=>{
+    return this.toVector(this._fun(axis,0,0,(flatten)=>{
       let mean = flatten.mean()
       return flatten.data.map(x=>(x-mean)**2).reduce((a,b)=>a+b)/(flatten.data.length-1)
-    })
+    }))
   }
   ptp(axis=null){
-    return this._fun(axis,0,0,(flatten)=>{
+    return this.toVector(this._fun(axis,0,0,(flatten)=>{
       return flatten.max() - flatten.min()
-    })
+    }))
   }
   median(axis=null){
-    return this._fun(axis,0,0,(flatten)=>{
+    return this.toVector(this._fun(axis,0,0,(flatten)=>{
       let length=parseInt(flatten.data.length/2)
       if (flatten.data.length%2!=0) return (flatten.data[length]+flatten.data[length-1])/2 
       return flatten.data[length]
-    })
+    }))
   }
   normal(axis=null,N){
     if (N==undefined) N=[0,1]
     let [mu,sigma]=N
-    return this._fun(axis,0,0,(flatten)=>{
+    return this.toVector(this._fun(axis,0,0,(flatten)=>{
       return flatten.sub(flatten.mean()).div(flatten.std()).mul(sigma).add(mu)
-    })
+    }))
+  }
+  minmaxNormal(axis=null){
+    return this.toVector(this._fun(axis,0,0,(flatten)=>{
+      let min = flatten.min()
+      let max = flatten.max()
+      return flatten.data.map(x=>{
+        let rst=(x-min)/(max-min)
+        return rst
+      })
+    }))
   }
 
   allclose(x){return this.close(x).all()}
@@ -428,10 +653,14 @@ class Vector{
   
   dot(a){
     this.ensureCanDot(a)
-    if (this.ndim==1)
-      return this.data.map((x,i)=>x*(a.data?a.data[i]:a)).reduce((i,j)=>i+j)
-    if (this.ndim==2)
-      return this.toVector(this.data.map((x,i)=>a.T.data.map((y,j)=>x.dot(y))))
+    let rst
+    if (this.ndim==1){
+      rst = this.data.map((x,i)=>x*(a.data?a.data[i]:a)).reduce((i,j)=>i+j)
+    }else if (this.ndim==2){
+      rst = this.toVector(this.data.map((x,i)=>a.T.data.map((y,j)=>x.dot(y))))
+      return  this.setGradFn(rst,a,"dot")
+    }
+    return rst
   }
   clip(m,n){
     return new Vector(this.data.map(x=>{
@@ -688,6 +917,52 @@ class Vector{
     b=new Vector(b).reshape(this.shape[0],1)
     return this.inv().dot(b).value
   }
+  trace(){
+    this.ensureMatrix()
+    let a=this.value
+    let t=0
+    for (let i=0;i<a.length;i++){
+      for (let j=0;j<a[i].length;j++){
+        if (i==j) t+=a[i][j]
+      }
+    }
+    if (this.requiresGrad){
+      t = new Vector([t])
+      t.requiresGrad=true
+      t.gradFn=grad.Operate.wrapper(this.gradFn,null,"tr")
+    }
+    return t
+  }
+  setGrad(bool=true){
+    this.requiresGrad=bool
+    this.grad=null
+    this.gradFn=null
+    if (bool && this.isLeaf){
+      this.gradFn=new autograd.Variable(this)
+    }
+    return this
+  }
+  get isLeaf(){
+    return !(this.gradFn instanceof autograd.Operate)
+  }
+  expression(){return this.gradFn && this.gradFn.expression()}
+  gradExpression(){
+    if (!this.gradFn) return null
+    return this.gradFn.gradExpression()
+  }
+  backward(){
+    if (!this.requiresGrad) throw new Error("after call setGrad(true) ,then use this function")
+    let variables=this.gradFn.variables()
+    variables.map(v=>{
+      let op=this.gradFn.backward(v)
+      let a=dim.ensureUnit(op.eval())
+      v.data.grad = v.data.grad?v.data.grad.add(a):a
+    })  
+  }
+  gradClear(){
+    this.gradFn.clearData()
+    this.grad=null
+  }
 }
 class Dim{
   constructor(){
@@ -714,6 +989,15 @@ class Dim{
     if (v.length==1) v=v[0]
     return v
   }
+  ensureSameShape(a,b){a.ensureSameShape(b);return true}
+  ensureUnit(a){
+    if (typeof a=="number") return new Vector([a])
+    return a
+  }
+  ensure1D(...a){a.map(x=>x.ensure1D());return true}
+  ensure2D(...a){a.map(x=>x.ensure2D());return true}
+  ensure3D(...a){a.map(x=>x.ensure3D());return true}
+
   array(a,dtype){return new Vector(a,dtype)}
   flatten(a){a=this.ensureVector(a);return a.flatten()}
   transpose(a){a=this.ensureVector(a);return a.transpose()}
@@ -817,6 +1101,9 @@ class Dim{
   ones(shape=1,dtype){
     return this.__reset(1,dtype,shape)
   }
+  fill(n,shape=1,dtype){
+    return this.__reset(n,dtype,shape)
+  }
   eye(number,dtype){//对角矩阵
     return this.__reset((i,args)=>{
         let n=args[0]
@@ -850,33 +1137,74 @@ class Dim{
   roots(p){p=this.ensurePoly(p);return p.roots()}
   lagrange(points){return this.poly1d(points)}
   
-  sin(a){a=this.ensureVector(a);return a.sin()}
-  cos(a){a=this.ensureVector(a);return a.cos()}
-  tan(a){a=this.ensureVector(a);return a.tan()}
-  asin(a){a=this.ensureVector(a);return a.asin()}
-  acos(a){a=this.ensureVector(a);return a.acos()}
-  atan(a){a=this.ensureVector(a);return a.atan()}
-  asinh(a){a=this.ensureVector(a);return a.asinh()}
-  acosh(a){a=this.ensureVector(a);return a.acosh()}
-  atanh(a){a=this.ensureVector(a);return a.atanh()}
-  sinh(a){a=this.ensureVector(a);return a.sinh()}
-  cosh(a){a=this.ensureVector(a);return a.cosh()}
-  tanh(a){a=this.ensureVector(a);return a.tanh()}
-  log(a){a=this.ensureVector(a);return a.log()}
-  log2(a){a=this.ensureVector(a);return a.log2()}
-  log10(a){a=this.ensureVector(a);return a.log10()}
-  exp(a){a=this.ensureVector(a);return a.exp()}
-  sqrt(a){a=this.ensureVector(a);return a.sqrt()}
-  square(a){a=this.ensureVector(a);return a.square()}
-  pow(a,n){a=this.ensureVector(a);return a.pow(n)}
-  floor(a){a=this.ensureVector(a);return a.floor()}
-  ceil(a){a=this.ensureVector(a);return a.ceil()}
-  around(a,n){a=this.ensureVector(a);return a.around(n)}
- 
-  add(a,b){[a,b]=this.ensureVector(a,b);return a.add(b)}
-  sub(a,b){[a,b]=this.ensureVector(a,b);return a.sub(b)}
-  mul(a,b){[a,b]=this.ensureVector(a,b);return a.mul(b)}
-  div(a,b){[a,b]=this.ensureVector(a,b);return a.div(b)}
+  randians(a){
+    a=this.ensureVector(a);
+    return (typeof a=="number")?a/180*Math.PI:a.randians()
+  }
+  sin(a){a=this.ensureVector(a);return (typeof a=="number")?Math.sin(a):a.sin()}
+  cos(a){a=this.ensureVector(a);return (typeof a=="number")?Math.cos(a):a.cos()}
+  tan(a){a=this.ensureVector(a);return (typeof a=="number")?Math.tan(a):a.tan()}
+  asin(a){a=this.ensureVector(a);return (typeof a=="number")?Math.asin(a):a.asin()}
+  acos(a){a=this.ensureVector(a);return (typeof a=="number")?Math.acos(a):a.acos()}
+  atan(a){a=this.ensureVector(a);return (typeof a=="number")?Math.atan(a):a.atan()}
+  asinh(a){a=this.ensureVector(a);return (typeof a=="number")?Math.asinh(a):a.asinh()}
+  acosh(a){a=this.ensureVector(a);return (typeof a=="number")?Math.acosh(a):a.acosh()}
+  atanh(a){a=this.ensureVector(a);return (typeof a=="number")?Math.atanh(a):a.atanh()}
+  sinh(a){a=this.ensureVector(a);return (typeof a=="number")?Math.sinh(a):a.sinh()}
+  cosh(a){a=this.ensureVector(a);return (typeof a=="number")?Math.cosh(a):a.cosh()}
+  tanh(a){a=this.ensureVector(a);return (typeof a=="number")?Math.tanh(a):a.tanh()}
+  log(a){a=this.ensureVector(a);return (typeof a=="number")?Math.log(a):a.log()}
+  log2(a){a=this.ensureVector(a);return (typeof a=="number")?Math.log2(a):a.log2()}
+  log10(a){a=this.ensureVector(a);return (typeof a=="number")?Math.log10(a):a.log10()}
+  exp(a){a=this.ensureVector(a);return (typeof a=="number")?Math.exp(a):a.exp()}
+  sqrt(a){a=this.ensureVector(a);return (typeof a=="number")?Math.sqrt(a):a.sqrt()}
+  square(a){a=this.ensureVector(a);return (typeof a=="number")?a*a:a.square()}
+  pow(a,n){a=this.ensureVector(a);return (typeof a=="number")?Math.pow(a,n):a.pow(n)}
+  floor(a){a=this.ensureVector(a);return (typeof a=="number")?Math.floor(a):a.floor()}
+  ceil(a){a=this.ensureVector(a);return (typeof a=="number")?Math.ceil(a):a.ceil()}
+  around(a,n){
+    a=this.ensureVector(a);
+    if (typeof a=="number"){
+      let a0=10**n
+      return Math.round(a*a0)/a0
+    }else{
+      return a.around(n)
+    }
+  }
+  abs(a){a=this.ensureVector(a);return (typeof a=="number")?Math.abs(a):a.abs()}
+  
+  add(a,b){
+    [a,b]=this.ensureVector(a,b);
+    if (typeof a=="number" && typeof b=="number") return a+b
+    if (typeof a=="number" || a.isUnit){
+      return b.add(a)
+    }
+    return a.add(b)
+  }
+  sub(a,b){
+    [a,b]=this.ensureVector(a,b);
+    if (typeof a=="number" && typeof b=="number") return a-b
+    if (typeof a=="number" || a.isUnit){
+      return b.neg().add(a)
+    }
+    return a.sub(b)
+  }
+  mul(a,b){
+    [a,b]=this.ensureVector(a,b);
+    if (typeof a=="number" && typeof b=="number") return a*b
+    if (typeof a=="number" || a.isUnit){
+      return b.mul(a)
+    }
+    return a.mul(b)
+  }
+  div(a,b){
+    [a,b]=this.ensureVector(a,b);
+    if (typeof a=="number" && typeof b=="number") return a/b
+    if (typeof a=="number" || a.isUnit){
+      return b.reciprocal().mul(a)
+    }
+    return a.div(b)
+  }
   power(a,b){[a,b]=this.ensureVector(a,b);return a.power(b)}
   mod(a,b){[a,b]=this.ensureVector(a,b);return a.mod(b)}
   subtract(x){return this.sub(x)}
@@ -898,6 +1226,7 @@ class Dim{
   sort(a){a=this.ensureVector(a);return a.sort(b)}
 
   normal(a,N){a=this.ensureVector(a);return a.normal(N)}
+  minmaxNormal(a){a=this.ensureVector(a);return a.minmaxNormal()}
   
   sum(a,axis=null){a=this.ensureVector(a);return a.sum(axis)}
   mean(a,axis=null){a=this.ensureVector(a);return a.mean(axis)}
@@ -916,7 +1245,19 @@ class Dim{
   all(a){a=this.ensureVector(a);return a.all()}
   any(a){a=this.ensureVector(a);return a.any()}
 
-  dot(a,b){[a,b]=this.ensureVector(a,b);return a.dot(b)}
+  dot(a,b){
+    [a,b]=this.ensureVector(a,b);
+    if (typeof a=="number" && typeof b=="number") return a*b
+    if (typeof a=="number" || a.isUnit){
+      if (a==0) return 0
+      throw new Error("dot 函数错误")
+    }
+    if (typeof b=="number" || b.isUnit){
+      if (b==0) return 0
+      throw new Error("dot 函数错误")
+    }
+    return a.dot(b)
+  }
   matmul(a,b){return this.dot(a,b)}
   
   clip(a,m,n){a=this.ensureVector(a);return a.clip(m,n)}
@@ -948,6 +1289,19 @@ class Dim{
     let B=this.array(this.fft.fft(b))
     let C=A.mul(B)
     return this.fft.ifft(C.data)
+  }
+  trace(a){a=this.ensureVector(a);return a.trace()}
+  Constant(n){
+    n=(typeof n=="number")?parseFloat(n):n;
+    if (n instanceof autograd.Constant) return n
+    return new autograd.Constant(n)
+  }
+  Variable(data,name){
+    if (data instanceof autograd.Variable) return data
+    return new autograd.Variable(data,name)
+  }
+  Operate(left,right,mode){
+    return autograd.Operate.wrapper(left,right,mode)
   }
 }
 exports.dim = new Dim()
