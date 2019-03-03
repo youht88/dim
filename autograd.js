@@ -88,9 +88,15 @@ class Variable extends Autograd{
     this.type = "Variable"
     global.VARIABLE.push({name:this.name})
   }
-  partialGradient(partial={},parentData={}){
-    console.log(`this:${this.name}.shape=${this.data.shape},partial:${partial.name}.shape${partial.data.shape}`)
+  partialGradient(partial={},prevOp){
     let rst
+    if (prevOp==undefined) prevOp=new Constant(1)
+    if (partial.name == this.name) {
+      console.log("prevOp",prevOp.eval().value)
+      return prevOp
+    }
+    return new Constant(0)
+    
     if (partial.name == this.name){
       if ((typeof this.data=="number") || this.data.isUnit){ //标量
         if(partial.data.ndim==1) {
@@ -103,7 +109,6 @@ class Variable extends Autograd{
       }else if (this.data.ndim==1){//向量
         if ((typeof partial.data=="number") || partial.data.isUnit){
           //console.log("向量对标量求导")
-          rst = new Constant(dim.ones(this.data.size))
         }else if (partial.data.ndim==1){
           //console.log("向量对向量求导，理论应该是返回雅可比矩阵")
           rst = new Constant(dim.ones(this.data.size))
@@ -155,192 +160,186 @@ class Operate extends Autograd{
     else this.left = left
     if (typeof right == "number") this.right = new Constant(right)
     else this.right = right
-
+    
     if (!name) name = "op"+Math.random().toString().slice(-6)
     this.name=name
+    
     this.operate = operate
     this.type = "Operate"
   }
-  _mulOrDot(part1,part2,partial){
-    let rst
-    //if (part1.type=="Operate" && part1.operate=="dot"){
-      rst = part1.partialGradient(partial,part2.eval())
-    //}else{
-    //  rst = Operate.wrapper(part1.partialGradient(partial),part2,"mul")
-    //}
-    return rst
-  }
-  _useDot(part1,vs){
-    if (vs==undefined) return part1 
-    return Operate.wrapper(part1,new Constant(vs),"mul")
-  }
-  partialGradient(partial,vs){
+  partialGradient(partial,prevOp){
     if (partial.type!="Variable") throw new Error("partial参数必须是Variable类型")
     if (this.catch && this._grads[partial.name]) return this._grads[partial.name]
-    if (vs==undefined) vs=dim.ones(this.eval().shape)
+    if (prevOp==undefined) prevOp=new Constant(dim.ones(this.eval().shape))
     let rst
     switch (this.operate){
       case "add":
       case "sub":{
-        let part1= Operate.wrapper(this.left.partialGradient(partial),this.right.partialGradient(partial),this.operate)
-        rst = this._useDot(part1,vs)
+        let part1= Operate.wrapper(this.left.partialGradient(partial,prevOp),this.right.partialGradient(partial,prevOp),this.operate)
+        rst = part1
         break;
       }case "mul":{
-        let part1 = Operate.wrapper(this.right,new Constant(vs),"mul")
-        let part2 = Operate.wrapper(this.left,new Constant(vs),"mul")
-        let part3 = this._mulOrDot(this.left,part1,partial)
-        let part4 = this._mulOrDot(this.right,part2,partial)
-        
-        let part5 = Operate.wrapper(part3,part4,"add")
-        rst = this._useDot(part5,vs)
+        let part1 = Operate.wrapper(this.right,prevOp,"mul")
+        let part2 = this.left.partialGradient(partial,part1)
+        let part3 = Operate.wrapper(this.left,prevOp,"mul")
+        let part4 = this.right.partialGradient(partial,part3)
+        let part5 = Operate.wrapper(part2,part4,"add")
+        rst = part5
         break;
       }case "div":{
-        let part1 = Operate.wrapper(this.left.partialGradient(partial),this.right,"mul")
-        let part2 = Operate.wrapper(this.left,this.right.partialGradient(partial),"mul")
-        let part3 = Operate.wrapper(part1,part2,"sub")
-        let part4 = Operate.wrapper(this.right,new Constant(2),"pow")
-        let part5 = Operate.wrapper(part3,part4,"div")
-        rst = this._useDot(part5,vs)
+        let part1 = Operate.wrapper(this.right,prevOp,"mul")
+        let part2 = this.left.partialGradient(partial,part1)
+        let part3 = Operate.wrapper(this.left,prevOp,"mul")
+        let part4 = this.right.partialGradient(partial,part3)
+        let part5 = Operate.wrapper(part2,part4,"sub")
+        let part6 = Operate.wrapper(this.right,new Constant(2),"pow")
+        let part7 = Operate.wrapper(part3,part4,"div")
         break;
       }case "pow":{
         let c = new Constant(this.right.eval() - 1)
         let part2 = Operate.wrapper(this.left,c,"pow")
         let part3 = Operate.wrapper(this.right,part2,"mul")
-        let part4 = Operate.wrapper(this.left.partialGradient(partial),part3,"mul")
-        rst = this._useDot(part4,vs)
+        let part4 = Operate.wrapper(part3,prevOp,"mul")
+        rst = this.left.partialGradient(partial,part4)
         break;
       }case "exp":{
-        let part1 = Operate.wrapper(this.left.partialGradient(partial),this,"mul")
-        rst = this._useDot(part1,vs)
+        let part1 = Operate.wrapper(this,prevOp,"mul")
+        let part2 = this.left.partialGradient(partial,part1)
+        rst = part2
         break;
       }case "log":{
         let part1 = Operate.wrapper(new Constant(1),this.left,"div")
-        let part2 = Operate.wrapper(this.left.partialGradient(partial),part1,"mul")
-        rst = this._useDot(part2,vs)
+        let part2 = Operate.wrapper(part1,prevOp,"mul")
+        let part3 = this.left.partialGradient(partial,part2)
+        rst = part3
         break;
       }case "log2":{
         let part1 = Operate.wrapper(new Constant(1/Math.log(2)),this.left,"div")
-        let part2 = Operate.wrapper(this.left.partialGradient(partial),part1,"mul")
-        rst = this._useDot(part2,vs)
+        let part2 = Operate.wrapper(part1,prevOp,"mul")
+        let part3 = this.left.partialGradient(partial,part2)
+        rst = part3
         break;
       }case "log10":{
         let part1 = Operate.wrapper(new Constant(1/Math.log(10)),this.left,"div")
-        let part2 = Operate.wrapper(this.left.partialGradient(partial),part1,"mul")
-        rst = this._useDot(part2,vs)
+        let part2 = Operate.wrapper(part1,prevOp,"mul")
+        let part3 = this.left.partialGradient(partial,part2)
+        rst = part3
         break;
       }case "sin":{
         let part1 = Operate.wrapper(this.left,null,"cos")
-        rst = this._mulOrDot(this.left,part1,partial)
-        rst = this._useDot(rst,vs)
+        let part2 = Operate.wrapper(part1,prevOp,"mul")
+        rst = this.left.partialGradient(partial,part2)
         break;
       }case "cos":{
         let part1 = Operate.wrapper(this.left,null,"sin")
         let part2 = Operate.wrapper(new Constant(-1),part1,"mul")
-        rst = this._mulOrDot(this.left,part1,partial)
+        let part3 = Operate.wrapper(part2,prevOp,"mul")
+        rst = this.left.partialGradient(partial,part3)
         break;
       }case "tan":{
         let part1 = Operate.wrapper(this.left,null,"cos")
         let part2 = Operate.wrapper(part1,2,"pow")
         let part3 = Operate.Wrapper(new Constant(1),part2,"div")
-        let part4 = Operate.wrapper(this.left.partialGradient(partial),part3,"mul")
-        rst = part4
+        let part4 = Operate.wrapper(part3,prevOp,"mul")
+        rst = this.left.partialGradient(partial,part4)
         break;
       }case "asin":{
         let part1 = Operate.wrapper(this.left,2,"pow")
         let part2 = Operate.wrapper(new Constant(1),part1,"sub")
         let part3 = Operate.wrapper(part1,null,"sqrt")
         let part4 = Operate.wrapper(new Constant(1),part3,"div")
-        let part5 = Operate.wrapper(this.left.partialGradient(partial),part4,"mul")
-        rst = part5
+        let part5 = Operate.wrapper(part4,prevOp,"mul")
+        rst = this.left.partialGradient(partial,part5)
         break;
       }case "acos":{
         let part1 = Operate.wrapper(this.left,2,"pow")
         let part2 = Operate.wrapper(new Constant(1),part1,"sub")
         let part3 = Operate.wrapper(part1,null,"sqrt")
         let part4 = Operate.wrapper(new Constant(-1),part3,"div")
-        let part5 = Operate.wrapper(this.left.partialGradient(partial),part4,"mul")
-        rst = part5
+        let part5 = Operate.wrapper(part4,prevOp,"mul")
+        rst = this.left.partialGradient(partial,part5)
         break;
       }case "atan":{
         let part1 = Operate.wrapper(this.left,2,"pow")
         let part2 = Operate.wrapper(new Constant(1),part1,"add")
         let part3 = Operate.wrapper(new Constant(1),part2,"div")
-        let part4 = Operate.wrapper(this.left.partialGradient(partial),part3,"mul")
-        rst = part4
+        let part4 = Operate.wrapper(part3,prevOp,"mul")
+        rst = this.left.partialGradient(partial,part4)
         break;
       }case "sinh":{
         let part1 = Operate.wrapper(this.left,null,"cosh")
-        let part2 = Operate.wrapper(this.left.partialGradient(partial),part1,"mul")
-        rst = part2
+        let part2 = Operate.wrapper(part1,prevOp,"mul")
+        rst = this.left.partialGradient(partial,part2)
         break;
       }case "cosh":{
         let part1 = Operate.wrapper(this.left,null,"sinh")
-        let part2 = Operate.wrapper(this.left.partialGradient(partial),part1,"mul")
-        rst = part2
+        let part2 = Operate.wrapper(part1,prevOp,"mul")
+        rst = this.left.partialGradient(partial,part2)
         break;
       }case "sqrt":{
         let part1 = Operate.wrapper(this.left,new Constant(-0.5),"pow")
         let part2 = Operate.wrapper(part1,new Constant(0.5),"mul")
-        let part3 = Operate.wrapper(this.left.partialGradient(partial),part2,"mul")
-        rst = part3
+        let part3 = Operate.wrapper(part2,prevOp,"mul")
+        let part4 = this.left.partialGradient(partial,part3)
+        rst = part4
         break;
       }case "sum":{
         let part1 =new Constant(dim.fill(1,this.left.eval().shape))
-        rst = this._mulOrDot(this.left,part1,partial)
+        let part2 = Operate.wrapper(part1,prevOp,"mul")
+        let part3 = this.left.partialGradient(partial,part2)
+        rst = part3
         break;
       }case "mean":{
-        let part2
         let part1 =new Constant(dim.fill(1/this.left.eval().size,this.left.eval().shape))
-        rst = this_mulOrDot(this.left,part1,partial)
+        let part2 = Operate.wrapper(part1,prevOp,"mul")
+        let part3 = this.left.partialGradient(partial,part2)
+        rst = part3
         break;
       }case "max":{
         let zero =new Constant(dim.zero(this.left.eval().shape))
         let part1 =new Constant(zero)
-        let part2 = Operate.wrapper(this.left.partialGradient(partial),part1,"mul")
-        rst = part2
+        let part2 = Operate.wrapper(part1,prevOp,"mul")
+        let part3 = this.left.partialGradient(partial,part2)
+        rst = part3
         break;
       }case "min":{
         let zero =new Constant(dim.zero(this.left.eval().shape))
         let part1 =new Constant(zero)
-        let part2 = Operate.wrapper(this.left.partialGradient(partial),part1,"mul")
-        rst = part2
+        let part2 = Operate.wrapper(part1,prevOp,"mul")
+        let part3 = this.left.partialGradient(partial,part2)
+        rst = part3
         break;
       }case "dot":{
-        console.log("start:",vs && vs.value)
         let part1,part2,part3
-        console.log("name of left,right,partial",this.left.name,this.right.name,partial.name)
-        console.log("s is:",vs.value)
-        let dLeft = vs.dot(this.right.eval().T)
-        let dRight = this.left.eval().T.dot(vs)
+        let dLeft = new Constant(prevOp.eval().dot(this.right.eval().T))
+        let dRight = new Constant(this.left.eval().T.dot(prevOp.eval()))
         if (this.left.name==partial.name){
-          console.log("left partial==>")
-          part1 = new Constant(dLeft)
+          part1 = dLeft
           part2 = this.right.partialGradient(partial,dRight)
         }else if(this.right.name==partial.name){
-          console.log("right partial==>")
           part1 = this.left.partialGradient(partial,dLeft)
-          part2 = new Constant(dRight)
-          console.log(`right=${partial.name},part2=${part2.eval().value},dLeft=${dLeft.value}`)
+          part2 = dRight
         }else{
-          console.log("not left and right,run op==>")
           part1=this.left.partialGradient(partial,dLeft)
           part2=this.right.partialGradient(partial,dRight)
         }
         part3=Operate.wrapper(part1,part2,"add")
-        //console.log('ok operate',part3.eval().value)
         rst = part3
         break;
       }case "relu":{
         let part1 = Operate.wrapper(this.left,null,"reluDeri")
-        rst = this._mulOrDot(this.left,part1,partial)
+        let part2 = Operate.wrapper(part1,prevOp,"mul")
+        let part3 = this.left.partialGradient(partial,part2)
+        rst = part3
         break;
       }case "sigmoid":{
         let part1 = Operate.wrapper(this.left,null,"sigmoidDeri")
-        let part2 = Operate.wrapper(this.left.partialGradient(partial),part1,"mul")
-        rst = part2
+        let part2 = Operate.wrapper(part1,prevOp,"mul")
+        let part3 = this.left.partialGradient(partial,part2)
+        rst = part3
         break;
       }case "T":{
-        let part1 = this._mulOrDot(left,"",partial)
+        let part1 = this.left.partialGradient(partial,prevOp)
         let part2 = Operate.wrapper(part1,null,"T")
         rst = part2
         break;
@@ -388,7 +387,8 @@ class Operate extends Autograd{
         if (part1=='0'){
           if (part2.slice(0,1)=='-') return `${part2.slice(1)}`  
           return `(-${part2})`
-        }if (part2=='0')  return `${part1}`
+        }
+        if (part2=='0')  return `${part1}`
         rst = `(${part1}-${part2})`
         break;
       }case "mul":{
@@ -396,18 +396,18 @@ class Operate extends Autograd{
         let part2=this.right.expression()
         if (part1=='-1') return `-${part2}`
         if (part2=='-1') return `-${part1}`
-        rst = `${part1}*${part2}`
+        rst = `(${part1}*${part2})`
         break;
       }case "div":{
         let part1=this.left.expression()
         let part2=this.right.expression()
         if (part2=='-1') return `-${part1}`
-        rst = `(${part1})/(${part2})`
+        rst = `(${part1}/${part2})`
         break;
       }case "dot":{
         let part1=this.left.expression()
         let part2=this.right.expression()
-        rst = `(${part1})×(${part2})`
+        rst = `(${part1}×${part2})`
         break;
       }case "pow":{rst = this.left.expression() + "^" + this.right.expression();break;
       }case "exp":{rst = "e^"+this.left.expression() ;break;
@@ -484,12 +484,10 @@ class Operate extends Autograd{
     switch (this.operate){
       case "add":{rst= dim.add(this.left.eval(),this.right.eval());break}
       case "sub":{rst= dim.sub(this.left.eval(),this.right.eval());break}
-      case "mul":{
-        rst= dim.mul(this.left.eval(),this.right.eval());
-        break
-      }
+      case "mul":{rst= dim.mul(this.left.eval(),this.right.eval());break}
       case "div":{rst= dim.div(this.left.eval(),this.right.eval());break}
       case "pow":{rst= dim.pow(this.left.eval(),this.right.eval());break}
+      case "sqrt":{rst= dim.sqrt(this.left.eval());break}
       case "exp":{rst= dim.exp(this.left.eval());break}
       case "log":{rst= dim.log(this.left.eval());break}
       case "log2":{rst= dim.log2(this.left.eval());break}
@@ -510,18 +508,16 @@ class Operate extends Autograd{
       case "mean":{rst=dim.mean(this.left.eval());break}
       case "max":{rst=dim.max(this.left.eval());break}
       case "min":{rst=dim.min(this.left.eval());break}
-      case "dot":{
-        rst=dim.dot(this.left.eval(),this.right.eval());
-        break
-      }
+      case "dot":{rst=dim.dot(this.left.eval(),this.right.eval());break}
       case "relu":{rst=dim.nn.relu(this.left.eval());break}
       case "reluDeri":{rst=dim.nn.reluDeri(this.left.eval());break}
       case "sigmoid":{rst=dim.nn.sigmoid(this.left.eval());break}
       case "sigmoidDeri":{rst=dim.nn.sigmoidDeri(this.left.eval());break}
       case "T":{rst=this.left.eval().T;break;}
       case "tr":{rst=dim.trace(this.left.eval());break;}
-      default:
+      default:{
         throw new Error(`unknown operate {${this.operate}}`)  
+      }
     }
     this._data = rst
     return rst
