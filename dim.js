@@ -3,18 +3,19 @@ Random = require('./random.js').Random
 Complex = require('./complex.js').Complex
 Poly = require('./poly.js').Poly
 NN = require('./nn.js').NN
+Optimizer = require('./nn.js').Optimizer
 fft = require('./fft.js').fft
 autograd = require('./autograd.js')
 
 class Vector{
   constructor(object,dtype=Float32Array){
+    if (object instanceof Vector){
+      return object
+    }
     if (Array.isArray(object)) {
       if (Array.isArray(object[0])){
         return new Vector(object.map(x=>new Vector(x,dtype)),dtype)
       }
-    }
-    if (object instanceof Vector){
-      return object
     }
     //自动判定复数
     if (Array.isArray(object) && (object[0] instanceof Complex)) dtype=Complex
@@ -27,6 +28,7 @@ class Vector{
     this.requiresGrad=false
     this.grad=null
     this.gradFn=null //new dim.nn.grad.Constant(this)
+    return this
   }
   ensureArray(data){
     if (this.dtype == Complex){
@@ -79,6 +81,14 @@ class Vector{
   get value(){
     return this.data.map((x,i)=>(x instanceof Vector)?x.value:x)
   }
+  replace(a){
+    this.ensureSameShape(a)
+    this.data.map((x,i)=>{
+      if (x instanceof Vector) return x.replace(a.data[i])
+      this.data[i]=a.data[i]
+    })
+    return this
+  }
   fill(n){
     this.data.map((x,i)=>{
       if (x instanceof Vector) return x.fill(n)
@@ -86,6 +96,7 @@ class Vector{
     })
     return this
   }
+  zero_(){return this.fill(0)}
   cast(dtype){
     if (typeof dtype == "string" ){
       switch (dtype.toUpperCase()){
@@ -138,8 +149,8 @@ class Vector{
   ensureSameShape(a){
     if (this.isNumber(a) || a.isUnit || this.isComplex(a)) return a
     if (this.shape.toString()!=a.shape.toString()) {
-      console.log(this.value)
-      console.log(a.value)
+      console.log("this:",this.value)
+      console.log("a:",a.value)
       throw new Error(`形状(${this.shape})与形状(${a.shape})不一致`)
     }
     return a
@@ -161,6 +172,12 @@ class Vector{
     if (this.ndim!=2 || this.shape[0]!=this.shape[1]) 
       throw new Error(`要求是方阵，但是参数形状是(${this.shape}),维度是(${this.ndim})`)
   }
+  ensureCanOnehot(){
+    if (this.ndim==1) return this.reshape(this.size,1)
+    if (this.ndim==2 && this.shape[1]==1) return this
+    console.log("ensureCanOnehot",this.value)
+    throw new Error(`对象要求是一维向量，或是n*1矩阵`)
+  }
   ensureCanDot(a){
     if (typeof a =="number") return
     if (this.ndim!=2 && this.ndim!=1) throw new Error(`参数是(${a.ndim})维,仅支持一、二维`)
@@ -175,16 +192,32 @@ class Vector{
   
   flatten(item){
     if (!item) item=[]
-    this.data.map((x,i)=>(x instanceof Vector)?x.flatten(item):item.push(x))
-    //console.log(item)
-    return new Vector(item)
+    this.data.map((x,i)=>{
+      x=dim.toVector(x);
+      return (x instanceof Vector)?x.flatten(item).data:item.push(x)
+    })
+    return dim.toVector(item)
   }
 
-  copy(){return this.toVector(this.value,this.dtype)}
+  copy(){return new Vector(this.value,this.dtype)}
   save(file){return fs.writeFileSync(file,JSON.stringify(this.value))}
   
-  print(){
-    console.log(JSON.stringify(this.value))
+  print(lr=3,lc=3,first){
+    let col = this.shape[this.shape.length - 1]
+    let row = this.shape[0]
+    if (first==undefined) console.log(`<==== shape:${this.shape.join('*')} ====>`)
+    return this.data.map((x,i)=>{
+      if (x instanceof Vector) {
+        if (i<lr || i>row-lr-1) return x.print(lr,lc,false)
+        if (i==lr) {
+          return ["... ... ... ... ... ... ..."]
+        }else { 
+          return ['omit']
+        }
+      }else{
+        return (i<lc || i>col-lc-1)?Math.round(x*10000)/10000:(i==lc)?"... ...":"omit"
+      }
+    }).filter(y=>y!='omit')
   }
   reshape(...d){
     if (Array.isArray(d[0])) d=d[0]
@@ -213,6 +246,7 @@ class Vector{
     //仅对维数为1的Vector进行降维
     if (this.ndim==1) return this
     let v = this.data.map(x=>{
+      if (!dim.isArray(x)) return x
       if (x.ndim!=1 && x.shape[0]==1) x=x.data[0]
       if (x.ndim!=1 && x instanceof Vector) return x.squeeze()
       return x
@@ -280,6 +314,9 @@ class Vector{
   sin(){
     let rst = new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.sin():Math.sin(x)))
     return this.setGradFn(rst,"sin")
+  }
+  sin_(){
+    return this.replace(this.sin())
   }
   cos(){
     let rst = new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.cos():Math.cos(x)))
@@ -384,6 +421,7 @@ class Vector{
     }
     return this.setGradFn(rst,a,"add")
   }
+  add_(a){return this.replace(this.add(a))}
   sub(a){
     a=this.ensureSameShape(a)
     let rst
@@ -397,6 +435,7 @@ class Vector{
     }
     return this.setGradFn(rst,a,"sub")
   }
+  sub_(a){return this.replace(this.sub(a))}
   mul(a){
     a=this.ensureSameShape(a)
     let rst
@@ -545,6 +584,18 @@ class Vector{
       return (deep<ndim-1)?x._fun(axis,deep,ndim,method):x 
     })
     return this.toVector(result)
+  }
+  softmax(axis=1){
+    let rst=  this.toVector(this._fun(axis,0,0,(flatten)=>{
+      let exp = dim.exp(flatten.data)
+      let sum = exp.sum()
+      return flatten.data.map((a,i)=>Math.exp(a)/sum)
+    }))
+    if (this.requiresGrad && axis==1){
+      rst.requiresGrad=true
+      rst.gradFn=grad.Operate.wrapper(this.gradFn,null,"softmax")
+    }
+    return rst
   }
   sum(axis=null){
     let rst=  this.toVector(this._fun(axis,0,0,(flatten)=>{
@@ -812,7 +863,66 @@ class Vector{
     if (axis==0) return this.vsplit(m)
     throw new Error("必须制定axis为0-纵向分割，1-横向分割,默认axis=1")
   }
-  pad(){}
+  pad(s,mode="constant",v){
+    if (this.ndim>2) throw new Error(`pad函数只支持一维或二维`)
+    if (this.ndim==1){
+      if (!v) v=[0,0]
+      if (typeof v == "number") v=[v,v]
+      if (typeof s == "number") s=[s,s]
+      let [x,y]=s
+      let value
+      let data=[]
+      switch (mode){
+        case "constant":
+          value=0;break;
+        case "mean":
+          value=this.mean();break;
+        case "maximum":
+          value=this.max();break;
+        case "minimum":
+          value=this.min();break;
+        default:
+          value=0
+      }
+      for (let i=0;i<x;i++) data.push(mode=="constant"?v[0]:value)
+      data=data.concat(this.data)
+      for (let i=0;i<y;i++) data.push(mode=="constant"?v[1]:value)
+      return new Vector(data)
+    }else if (this.ndim==2){
+      if (typeof s=="number") s=[[s,s],[s,s]]
+      if (typeof s[0]=="number") s[0]=[s[0],s[0]]
+      if (typeof s[1]=="number") s[1]=[s[1],s[1]]
+      if (!v) v=[0,0]
+      if (typeof v=="number") v=[v,v]
+      let value,value1
+      switch (mode){
+        case "constant":
+          value=dim.zeros(this.shape[1]);break;
+        case "mean":
+          value=this.mean(0);
+          v=this.mean();
+          break;
+        case "maximum":
+          value=this.max(0);
+          v = this.max();
+          break;
+        case "minimum":
+          value=this.min(0);
+          v = this.min();
+          break;
+        default:
+          value=dim.zros(this.shape[1])
+      }
+      let f,d=[]
+      let data=this.data
+      f=value.pad([s[0][1],s[1][1]],"constant",v)
+      for (let i=0;i<s[0][0];i++) d.push(f)
+      d = d.concat(data.map(x=>x.pad([s[0][1],s[1][1]],mode,v)))
+      for (let i=0;i<s[1][0];i++) d.push(f)
+  
+      return new Vector(d)   
+    }
+  }
 
   //SquareMatrix function
   lu(){//求三角阵
@@ -950,11 +1060,12 @@ class Vector{
     if (!this.gradFn) return null
     return this.gradFn.gradExpression()
   }
-  backward(){
+  backward(prevOp){
     if (!this.requiresGrad) throw new Error("after call setGrad(true) ,then use this function")
+    if (prevOp) prevOp = new autograd.Constant(prevOp)
     let variables=this.gradFn.variables()
     variables.map(v=>{
-      let op=this.gradFn.backward(v)
+      let op=this.gradFn.backward(prevOp,v)
       let a=dim.ensureUnit(op.eval())
       v.data.grad = v.data.grad?v.data.grad.add(a):a
     })  
@@ -962,6 +1073,13 @@ class Vector{
   gradClear(){
     this.gradFn.clearData()
     this.grad=null
+  }
+  onehot(n){
+    let a=this.ensureCanOnehot()
+    if (n==undefined) n=a.max()+1
+    let b=dim.zeros([a.shape[0],n])
+    a.value.map((x,i)=>b.data[i].data[x[0]]=1)
+    return new Vector(b)
   }
 }
 class Dim{
@@ -971,6 +1089,7 @@ class Dim{
     this.random = new Random(this)
     this.fft = fft
     this.nn = new NN(this)
+    this.optim = new Optimizer()
   }
   ensureVector(...a){
     let v = a.map(x=>{
@@ -999,6 +1118,8 @@ class Dim{
   ensure3D(...a){a.map(x=>x.ensure3D());return true}
 
   array(a,dtype){return new Vector(a,dtype)}
+  toVector(a,dtype){a=this.ensureVector(a);return a}
+  isArray(a){return Array.isArray(a)}
   flatten(a){a=this.ensureVector(a);return a.flatten()}
   transpose(a){a=this.ensureVector(a);return a.transpose()}
   copy(a){a=this.ensureVector(a);return a.copy()} 
@@ -1137,6 +1258,8 @@ class Dim{
   roots(p){p=this.ensurePoly(p);return p.roots()}
   lagrange(points){return this.poly1d(points)}
   
+  replace(a,b){[a,b]=this.ensureVector(a,b);return a.replace(b)}
+
   randians(a){
     a=this.ensureVector(a);
     return (typeof a=="number")?a/180*Math.PI:a.randians()
@@ -1303,6 +1426,7 @@ class Dim{
   Operate(left,right,mode){
     return autograd.Operate.wrapper(left,right,mode)
   }
+  onehot(a,n){a=this.ensureVector(a);return a.onehot(n)}
 }
 exports.dim = new Dim()
 exports.Vector = Vector

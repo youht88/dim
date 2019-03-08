@@ -1,0 +1,14 @@
+dim=require('./dim.js').dim
+a=dim.arange(2000).reshape(500,4)
+a.setGrad()
+b=dim.arange(200).reshape(4,50)
+b.setGrad()
+c=dim.arange(100).reshape(50,2)
+c.setGrad()
+d=dim.arange(20).reshape(2,10)
+d.setGrad()
+m1=a.dot(b)
+m2=m1.dot(c)
+m3=m2.dot(d)
+e=m3
+f=e.sum()

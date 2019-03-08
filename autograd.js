@@ -40,6 +40,7 @@ class Autograd{
 class Constant extends Autograd{
   constructor(data){
     super()
+    if (data.type=="Constant") return this
     data = dim.ensureVector(data)
     let jsonData = data instanceof dim.Vector?JSON.stringify(data.value):JSON.stringify(data)
     let idx=global.CONSTANT.map(x=>x.data).indexOf(jsonData)
@@ -50,15 +51,15 @@ class Constant extends Autograd{
     global.CONSTANT.push({name:this.name,data:jsonData,object:this})
     this._expressionStr=this.name
   }
-  partialGradient(partial={},parentData={}){
-    console.log(`this:${this.name}.shape=${this.data.shape},partial:${partial.name}.shape${partial.data.shape}`)
+  partialGradient(partial={},prevOp){
     let rst
     rst = new Constant(0)
     this._grads[this.name]=rst
     return rst
   }
   expression(){
-    return this.name
+    if (typeof this.data=="number") return this.data
+    return JSON.stringify(this.data.value)
   }
   gradExpression(){
     return Object.entries(this._grads).map(entry=>{
@@ -92,11 +93,10 @@ class Variable extends Autograd{
     let rst
     if (prevOp==undefined) prevOp=new Constant(1)
     if (partial.name == this.name) {
-      console.log("prevOp",prevOp.eval().value)
       return prevOp
+    }else{
+      return new Constant(0)
     }
-    return new Constant(0)
-    
     if (partial.name == this.name){
       if ((typeof this.data=="number") || this.data.isUnit){ //标量
         if(partial.data.ndim==1) {
@@ -183,6 +183,7 @@ class Operate extends Autograd{
         let part2 = this.left.partialGradient(partial,part1)
         let part3 = Operate.wrapper(this.left,prevOp,"mul")
         let part4 = this.right.partialGradient(partial,part3)
+        console.log("mul",part2.expression(),part4.expression())
         let part5 = Operate.wrapper(part2,part4,"add")
         rst = part5
         break;
@@ -201,6 +202,11 @@ class Operate extends Autograd{
         let part3 = Operate.wrapper(this.right,part2,"mul")
         let part4 = Operate.wrapper(part3,prevOp,"mul")
         rst = this.left.partialGradient(partial,part4)
+        break;
+      }case "square":{
+        let part1 = Operate.wrapper(new Constant(2),this.left,"mul")
+        let part2 = Operate.wrapper(part1,prevOp,"mul")
+        rst = this.left.partialGradient(partial,part2)
         break;
       }case "exp":{
         let part1 = Operate.wrapper(this,prevOp,"mul")
@@ -221,6 +227,13 @@ class Operate extends Autograd{
         break;
       }case "log10":{
         let part1 = Operate.wrapper(new Constant(1/Math.log(10)),this.left,"div")
+        let part2 = Operate.wrapper(part1,prevOp,"mul")
+        let part3 = this.left.partialGradient(partial,part2)
+        rst = part3
+        break;
+      }case "abs":{
+        let pre1 = Operate.wrapper(this.left,null,"abs")
+        let part1 = Operate.wrapper(this.left,pre1,"div")
         let part2 = Operate.wrapper(part1,prevOp,"mul")
         let part3 = this.left.partialGradient(partial,part2)
         rst = part3
@@ -276,6 +289,13 @@ class Operate extends Autograd{
         let part2 = Operate.wrapper(part1,prevOp,"mul")
         rst = this.left.partialGradient(partial,part2)
         break;
+      }case "tanh":{
+        let part1 = Operate.wrapper(this.left,null,"cosh")
+        let part2 = Operate.wrapper(part1,2,"pow")
+        let part3 = Operate.wrapper(new Constant(1),part2,"div")
+        let part4 = Operate.wrapper(part3,prevOp,"mul")
+        rst = this.left.partialGradient(partial,part4)
+        break;
       }case "sqrt":{
         let part1 = Operate.wrapper(this.left,new Constant(-0.5),"pow")
         let part2 = Operate.wrapper(part1,new Constant(0.5),"mul")
@@ -311,8 +331,14 @@ class Operate extends Autograd{
         break;
       }case "dot":{
         let part1,part2,part3
-        let dLeft = new Constant(prevOp.eval().dot(this.right.eval().T))
-        let dRight = new Constant(this.left.eval().T.dot(prevOp.eval()))
+        //直接求eval的方式也没有问题，因为上一层的反算结果已经完成了。这种方式的问题是
+        //不能在总算式的gradFn.gradExpression()中看到各偏导的dot计算公式
+        //let dLeft = new Constant(prevOp.eval().dot(this.right.eval().T))
+        //let dRight = new Constant(this.left.eval().T.dot(prevOp.eval()))
+        let tRight = Operate.wrapper(this.right,null,"T")
+        let dLeft = Operate.wrapper(prevOp,tRight,"dot")
+        let tLeft = Operate.wrapper(this.left,null,"T")
+        let dRight = Operate.wrapper(tLeft,prevOp,"dot")
         if (this.left.name==partial.name){
           part1 = dLeft
           part2 = this.right.partialGradient(partial,dRight)
@@ -326,27 +352,59 @@ class Operate extends Autograd{
         part3=Operate.wrapper(part1,part2,"add")
         rst = part3
         break;
+      }case "T":{
+        if (this.left.name==partial.name){
+          let part1 = Operate.wrapper(prevOp,null,"T")
+          rst = part1
+        }else{
+          let part1 = Operate.wrapper(prevOp,null,"T")
+          let part2 = this.left.partialGradient(partial,part1)
+          let part3 = Operate.wrapper(part2,null,"T")
+          rst = part3
+        }
+        break;
+      }case "tr":{
+        let part1 = Operate.wrapper(this.left.partialGradient(partial,prevOp),null,"tr")
+        rst = part1
+        break;
       }case "relu":{
         let part1 = Operate.wrapper(this.left,null,"reluDeri")
         let part2 = Operate.wrapper(part1,prevOp,"mul")
         let part3 = this.left.partialGradient(partial,part2)
         rst = part3
         break;
+      }case "reluDeri":{
+        return new Constant(this.eval())
       }case "sigmoid":{
         let part1 = Operate.wrapper(this.left,null,"sigmoidDeri")
         let part2 = Operate.wrapper(part1,prevOp,"mul")
         let part3 = this.left.partialGradient(partial,part2)
         rst = part3
         break;
-      }case "T":{
-        let part1 = this.left.partialGradient(partial,prevOp)
-        let part2 = Operate.wrapper(part1,null,"T")
-        rst = part2
+      }case "sigmoidDeri":{
+        return new Constant(this.eval())
+      }case "softmax":{
+        let part1 = Operate.wrapper(this,prevOp,"softmaxDeri")
+        let part2 = this.left.partialGradient(partial,part1)
+        rst = part2        
         break;
-      }case "tr":{
-        let part1 = Operate.wrapper(this.left.partialGradient(partial),null,"tr")
-        rst = part1
+      }case "softmaxDeri":{
+        return new Constant(this.eval())
+      }case "mseLoss":{
+        let part1 = Operate.wrapper(this.left,prevOp,"mul")
+        let part2 = Operate.wrapper(this.right,prevOp,"mul")
+        let part3 = this.left.partialGradient(partial,part1)
+        let part4 = this.right.partialGradient(partial,part2)
+        rst = Operate.wrapper(part3,part4,"add")        
         break;
+      }case "crossEntropy":{
+        let part1 = Operate.wrapper(this.left,this.right,"crossEntropyDeri")
+        let part2 = Operate.wrapper(part1,prevOp,"mul")
+        let part3 = this.left.partialGradient(partial,part2)
+        rst = part3        
+        break;
+      }case "crossEntropyDeri":{
+        return new Constant(this.eval())
       }default:{
         throw new Error(`${this.operate}是不正确的operate`)   
       }
@@ -410,10 +468,12 @@ class Operate extends Autograd{
         rst = `(${part1}×${part2})`
         break;
       }case "pow":{rst = this.left.expression() + "^" + this.right.expression();break;
+      }case "square":{rst = this.left.expression() + "^" + 2;break;
       }case "exp":{rst = "e^"+this.left.expression() ;break;
       }case "log":{rst = "ln("+this.left.expression()+")";break;
       }case "log2":{rst = "log2("+this.left.expression()+")";break;
       }case "log10":{rst = "log10("+this.left.expression()+")";break;
+      }case "abs":{rst = "|"+this.left.expression()+"|";break;
       }case "sin":{rst = "sin("+this.left.expression()+")";break;
       }case "cos":{rst = "cos("+this.left.expression()+")";break;
       }case "tan":{rst = "tan("+this.left.expression()+")";break;
@@ -432,7 +492,14 @@ class Operate extends Autograd{
       }case "max":{rst = "max("+this.left.expression()+")";break;
       }case "min":{rst = "min("+this.left.expression()+")";break;
       }case "relu":{rst = "relu("+this.left.expression()+")";break;
+      }case "reluDeri":{rst = "reluDeri("+this.left.expression()+")";break;
       }case "sigmoid":{rst = "sigmoid("+this.left.expression()+")";break;
+      }case "sigmoidDeri":{rst = "sigmoidDeri("+this.left.expression()+")";break;
+      }case "softmax":{rst = "softmax("+this.left.expression()+")";break;
+      }case "softmaxDeri":{rst = "softmaxDeri("+this.left.expression()+","+this.right.expression()+")";break;
+      }case "mseLoss":{rst = "mseLoss("+this.left.expression()+","+this.right.expression()+")";break;
+      }case "crossEntropy":{rst = "crossEntropy("+this.left.expression()+","+this.right.expression()+")";break;
+      }case "crossEntropyDeri":{rst = "crossEntropyDeri("+this.left.expression()+","+this.right.expression()+")";break;
       }case "T":{rst = "T("+this.left.expression()+")";break;
       }case "tr":{rst = "tr("+this.left.expression()+")";break;
       }default:{
@@ -487,11 +554,13 @@ class Operate extends Autograd{
       case "mul":{rst= dim.mul(this.left.eval(),this.right.eval());break}
       case "div":{rst= dim.div(this.left.eval(),this.right.eval());break}
       case "pow":{rst= dim.pow(this.left.eval(),this.right.eval());break}
+      case "square":{rst= dim.square(this.left.eval());break}
       case "sqrt":{rst= dim.sqrt(this.left.eval());break}
       case "exp":{rst= dim.exp(this.left.eval());break}
       case "log":{rst= dim.log(this.left.eval());break}
       case "log2":{rst= dim.log2(this.left.eval());break}
       case "log10":{rst= dim.log10(this.left.eval());break}
+      case "abs":{rst= dim.abs(this.left.eval());break}
       case "sin":{rst= dim.sin(this.left.eval());break}
       case "cos":{rst= dim.cos(this.left.eval());break}
       case "tan":{rst= dim.tan(this.left.eval());break}
@@ -509,12 +578,21 @@ class Operate extends Autograd{
       case "max":{rst=dim.max(this.left.eval());break}
       case "min":{rst=dim.min(this.left.eval());break}
       case "dot":{rst=dim.dot(this.left.eval(),this.right.eval());break}
+      case "T":{
+        rst=this.left.eval()
+        if (typeof rst == "number") break;
+        rst = rst.T
+        break;}
+      case "tr":{rst=dim.trace(this.left.eval());break;}
       case "relu":{rst=dim.nn.relu(this.left.eval());break}
       case "reluDeri":{rst=dim.nn.reluDeri(this.left.eval());break}
       case "sigmoid":{rst=dim.nn.sigmoid(this.left.eval());break}
       case "sigmoidDeri":{rst=dim.nn.sigmoidDeri(this.left.eval());break}
-      case "T":{rst=this.left.eval().T;break;}
-      case "tr":{rst=dim.trace(this.left.eval());break;}
+      case "softmax":{rst=dim.nn.softmax(this.left.eval());break}
+      case "softmaxDeri":{rst=dim.nn.softmaxDeri(this.left.eval(),this.right.eval());break}
+      case "mseLoss":{rst=dim.nn.mseLoss(this.left.eval(),this.right.eval());break}
+      case "crossEntropy":{rst=dim.nn.crossEntropy(this.left.eval(),this.right.eval());break}
+      case "crossEntropyDeri":{rst=dim.nn.crossEntropyDeri(this.left.eval(),this.right.eval());break}
       default:{
         throw new Error(`unknown operate {${this.operate}}`)  
       }
@@ -522,10 +600,10 @@ class Operate extends Autograd{
     this._data = rst
     return rst
   }
-  backward(partial){
+  backward(prevOp,partial){
     if (!partial) partial=this.variables()[0]
     if (!partial || partial.type!="Variable") throw new Error('partial参数必须Variable类型')
-    return this.partialGradient(partial)
+    return this.partialGradient(partial,prevOp)
   }
   isSame(a){
     let leftEqual,rightEqual
