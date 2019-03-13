@@ -189,7 +189,25 @@ class Vector{
       throw new Error(`(${this.shape})和(${a.shape})形状不符合要求`)
     }
   }
-  
+  rot180(){
+    if (this.ndim==1){
+      return new Vector(this.value.reverse())
+    }else if (this.ndim==2){
+      let h=this.shape[0]
+      let w=this.shape[1]
+      let value=this.value
+      let a=[]
+      for (let i=0;i<h;i++){
+        a[i]=[]
+        for(let j=0;j<w;j++){
+          a[i][j] = value[h-1-i][w-1-j]
+        }
+      }
+      return new Vector(a)    
+    }else{
+      throw new Error(`不支持高于二维操作`)
+    }
+  }
   flatten(item){
     if (!item) item=[]
     this.data.map((x,i)=>{
@@ -203,21 +221,45 @@ class Vector{
   save(file){return fs.writeFileSync(file,JSON.stringify(this.value))}
   
   print(lr=3,lc=3,first){
+    if (first==undefined) {
+      console.log(`<==== shape:${this.shape.join('*')} ====>`)
+      let left=''
+      for (let i=0;i<this.ndim-3;i++) left+='['
+      console.log(left)
+    }
+    if ((this.ndim-3)>0){
+      let row=this.shape[0]
+      this.data.map((x,i)=>{
+        if (i<lr || i>row-lr-1) x.print(lr,lc,false)
+        if (i==lr) console.log("... ... ...")
+      })
+    }else{
+      console.log(this._print(lr,lc))
+    }
+    if (first==undefined){
+      let right=''
+      for (let i=0;i<this.ndim-3;i++) right+=']'
+      console.log(right)
+    }
+    return 'ok'
+  }
+  _print(lr=3,lc=3){
+    let ndim=this.ndim
     let col = this.shape[this.shape.length - 1]
     let row = this.shape[0]
-    if (first==undefined) console.log(`<==== shape:${this.shape.join('*')} ====>`)
-    return this.data.map((x,i)=>{
-      if (x instanceof Vector) {
-        if (i<lr || i>row-lr-1) return x.print(lr,lc,false)
-        if (i==lr) {
-          return ["... ... ... ... ... ... ..."]
-        }else { 
-          return ['omit']
+      return this.data.map((x,i)=>{
+        if (x instanceof Vector) {
+          if (i<lr || i>row-lr-1) return x._print(lr,lc)
+          if (i==lr) {
+            return ["... ... ... ... ... ... ..."]
+          }else { 
+            return ['omit']
+          }
+        }else{
+          return (i<lc || i>col-lc-1)?Math.round(x*10000)/10000:(i==lc)?"... ...":"omit"
         }
-      }else{
-        return (i<lc || i>col-lc-1)?Math.round(x*10000)/10000:(i==lc)?"... ...":"omit"
-      }
-    }).filter(y=>y!='omit')
+      }).filter(y=>y!='omit')
+    
   }
   reshape(...d){
     if (Array.isArray(d[0])) d=d[0]
@@ -241,6 +283,48 @@ class Vector{
       p=[...t]
     }
     return this.toVector(t,this.dtype)
+  }
+  swapaxes(m,n){
+    if (m==n) return this
+    if (m%1!=0 || n%1!=0 || m<0 || n<0 || m>this.ndim-1 || n>this.ndim-1) throw new Error('轴参数错误')
+    let A=this.value
+    let [...shape]= this.shape
+    let a=shape[m]
+    shape[m]=shape[n]
+    shape[n]=a
+    let B=dim.zeros(shape).value
+    let indices = new Array(this.ndim)
+    return new Vector(this._swapaxes(A,B,0,indices,m,n))
+    /*
+    for (let i=0;i<shape[0];i++){
+      for (let j=0;j<shape[1];j++){
+        for (let k=0;k<shape[2];k++){
+          dataB[i][j][k] = dataA[i][k][j]
+        }
+      }
+    }
+    */
+  }
+  _swapaxes(A,B,deep,indices,m,n){
+    return B.map((x,i)=>{
+      indices[deep]=i
+      if (Array.isArray(x)){
+        if (i==0) indices[deep+1]=i
+        return this._swapaxes(A,x,deep+1,indices,m,n)
+      }
+      let index = [...indices]
+      index[index.length - 1]=i
+      if (index[m]!=index[n]){
+        let temp=index[n]
+        index[n]=index[m]
+        index[m]=temp
+      }
+      let item=A
+      for (let k=0;k<index.length;k++){
+        item=item[index[k]]
+      }
+      return item
+    })
   }
   squeeze(){
     //仅对维数为1的Vector进行降维
@@ -864,7 +948,7 @@ class Vector{
     throw new Error("必须制定axis为0-纵向分割，1-横向分割,默认axis=1")
   }
   pad(s,mode="constant",v){
-    if (this.ndim>2) throw new Error(`pad函数只支持一维或二维`)
+    if (this.ndim>3) throw new Error(`pad函数只支持一维、二维或三维`)
     if (this.ndim==1){
       if (!v) v=[0,0]
       if (typeof v == "number") v=[v,v]
@@ -921,7 +1005,9 @@ class Vector{
       for (let i=0;i<s[1][0];i++) d.push(f)
   
       return new Vector(d)   
-    }
+    }else if (this.ndim==3){
+      return new Vector(this.data.map(x=>x.pad(s,mode,v)))
+    } 
   }
 
   //SquareMatrix function
@@ -1080,6 +1166,25 @@ class Vector{
     let b=dim.zeros([a.shape[0],n])
     a.value.map((x,i)=>b.data[i].data[x[0]]=1)
     return new Vector(b)
+  }
+  kron(a,indices=false,dir="v"){
+    return this.data.map((x,i)=>{
+      if (x instanceof Vector) return x.kron(a,indices,"h")
+      if (indices){ 
+        return a.data[i].mul(x)
+      }else{
+        return a.mul(x)
+      }
+    }).reduce((m,n)=>{
+      if (dir=="h") {
+        if (m.ndim==1) return new Vector(m.data.concat(n.data))
+        return m.hstack(n)
+      }
+      if (dir=="v") {
+        if (m.ndim==1) return new Vector(m.data.concat(n.data))
+        return m.vstack(n)
+      }
+    })
   }
 }
 class Dim{
@@ -1427,6 +1532,9 @@ class Dim{
     return autograd.Operate.wrapper(left,right,mode)
   }
   onehot(a,n){a=this.ensureVector(a);return a.onehot(n)}
+  kron(a,b,indices){[a,b]=this.ensureVector(a,b);return a.kron(b,indices)}
+  print(a,lr,lc){a=this.ensureVector(a);a.print(lr,lc)}
+  swapaxes(a,m,n){a=this.ensureVector(a);return a.swapaxes(m,n)}
 }
 exports.dim = new Dim()
 exports.Vector = Vector
