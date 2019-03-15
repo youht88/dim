@@ -130,7 +130,7 @@ class NN{
     let y_onehot=this.dim.onehot(y,b.shape[1])
     this.dim.ensureSameShape(b,y_onehot)
     let rst = y_onehot.mul(b.log()).sum(1).neg().mean()
-    if (b.requiresGrad){
+    if (b.requiresGrad||y.requiresGrad){
       rst = new dim.Vector([rst])
       rst.requiresGrad=true
       let leftFn,rightFn
@@ -160,7 +160,7 @@ class NN{
       throw new Error(`filter(${filter.shape})不符合[outChannels*inChannels*W]的形状要求`) 
     if (input.shape[1]!=filter.shape[1]) 
       throw new Error(`input(${input.shape})与filter(${filter.shape})中channels数不一致`)
-    return new dim.Vector(input.data.map((outChannel)=>{
+    let rst= new dim.Vector(input.data.map((outChannel)=>{
        return new dim.Vector(filter.data.map((channel,ch)=>{
           return new dim.Vector(channel.data.map((kernel,k)=>{
             let bat = outChannel.data[k].pad(padding)
@@ -175,6 +175,20 @@ class NN{
           })).data.reduce((x,y)=>x.add(y))
        }))
     }))
+    if (input.requiresGrad || filter.requiresGrad){
+      rst.requiresGrad=true
+      let leftFn,rightFn
+      leftFn=(input.gradFn)?input.gradFn:new grad.Constant(input)
+      rightFn=(filter!=null)?((filter.gradFn)?filter.gradFn:new grad.Constant(filter)):null
+      //P1=(((In-1)*S+F) -(((In-F+2*P0)/S)+1))/2let In=input.shape[2]
+      let In=input.shape[2]
+      let F=filter.shape[2]
+      let S=stride
+      let P0=padding
+      let gradPadding=(((In-1)*S+F) -(((In-F+2*P0)/S)+1))/2
+      rst.gradFn=grad.Operate.wrapper(leftFn,rightFn,"conv1d",{padding:gradPadding})
+    }
+    return rst
   }
   conv2d(input, filter, stride=1, padding=0){
     if (input.shape.length!=4)
@@ -183,11 +197,10 @@ class NN{
       throw new Error(`filter(${filter.shape})不符合[outChannels*inChannels*H*W]的形状要求`) 
     if (input.shape[1]!=filter.shape[1]) 
       throw new Error(`input(${input.shape})与filter(${filter.shape})中channels数不一致`)
-    return new dim.Vector(input.data.map((outChannel,bh)=>{
+    let rst= new dim.Vector(input.data.map((outChannel,bh)=>{
        return new dim.Vector(filter.data.map((channel,ch)=>{
          return new dim.Vector(channel.data.map((kernel,k)=>{
             let bat = outChannel.data[k].pad(padding)
-            console.log(bat.shape,kernel.shape)
             let ih=bat.shape[0]
             let iw=bat.shape[1]
             let fh=kernel.shape[0]
@@ -205,6 +218,20 @@ class NN{
          })).data.reduce((x,y)=>x.add(y))
        }))
     }))
+    if (input.requiresGrad || filter.requiresGrad){
+      rst.requiresGrad=true
+      let leftFn,rightFn
+      leftFn=(input.gradFn)?input.gradFn:new grad.Constant(input)
+      rightFn=(filter!=null)?((filter.gradFn)?filter.gradFn:new grad.Constant(filter)):null
+      //P1=(((In-1)*S+F) -(((In-F+2*P0)/S)+1))/2let In=input.shape[2]
+      let In=input.shape[2]
+      let F=filter.shape[2]
+      let S=stride
+      let P0=padding
+      let gradPadding=(((In-1)*S+F) -(((In-F+2*P0)/S)+1))/2
+      rst.gradFn=grad.Operate.wrapper(leftFn,rightFn,"conv2d",{padding:gradPadding})
+    }
+    return rst
   }
   conv3d(input, filter, stride=1, padding=0){
     if (input.shape.length!=5)
@@ -242,14 +269,14 @@ class NN{
     }))
   }
   convTranspose1d(input, filter, stride=1, padding=0){
-    if (input.shape.length!=3)
+    if (!input || input.shape.length!=3)
       throw new Error(`input(${input.shape})不符合[miniBatch*inChannels*W]的形状要求`) 
-    if (filter.shape.length!=3)
+    if (!filter.shape || filter.shape.length!=3)
       throw new Error(`filter(${filter.shape})不符合[inChannels*outChannels*W]的形状要求`) 
     if (input.shape[1]!=filter.shape[0]) 
       throw new Error(`input(${input.shape})与filter(${filter.shape})中channels数不一致`)
     //change channel
-    filter = filter
+    filter = dim.swapaxes(filter,0,1)
     return new dim.Vector(input.data.map((outChannel)=>{
        return new dim.Vector(filter.data.map((channel,ch)=>{
           return new dim.Vector(channel.data.map((kernel,k)=>{
@@ -325,10 +352,17 @@ class NN{
         return new dim.Vector(a)
       })
     }))
+    if (input.requiresGrad){
+      rst.requiresGrad=true
+      let leftFn,rightFn
+      leftFn=input.gradFn
+      rightFn=new grad.Constant(ks)
+      rst.gradFn=grad.Operate.wrapper(leftFn,rightFn,"maxPool1d",{"indices":indices})
+    }
     return rst
   }
   avgPool1d(input,ks,padding=0){
-    return new dim.Vector(input.data.map((channel)=>{
+    let rst= new dim.Vector(input.data.map((channel)=>{
       return channel.data.map((kernel)=>{
         kernel=kernel.pad(padding)
         let iw=kernel.size
@@ -342,6 +376,14 @@ class NN{
         return new dim.Vector(a)
       })
     }))
+    if (input.requiresGrad){
+      rst.requiresGrad=true
+      let leftFn,rightFn
+      leftFn=input.gradFn
+      rightFn=new grad.Constant(ks)
+      rst.gradFn=grad.Operate.wrapper(leftFn,rightFn,"avgPool1d")
+    }
+    return rst
   }
   maxPool2d(input,ks,indices,padding=0){
     if (!(Array.isArray(indices) && indices.length==0)) {
@@ -374,10 +416,17 @@ class NN{
         return new dim.Vector(a)
       })
     }))
+    if (input.requiresGrad){
+      rst.requiresGrad=true
+      let leftFn,rightFn
+      leftFn=input.gradFn
+      rightFn=new grad.Constant(ks)
+      rst.gradFn=grad.Operate.wrapper(leftFn,rightFn,"maxPool2d",{"indices":indices})
+    }
     return rst
   }
   avgPool2d(input,ks,padding=0){
-    return new dim.Vector(input.data.map((channel)=>{
+    let rst= new dim.Vector(input.data.map((channel)=>{
        return channel.data.map((kernel)=>{
           kernel = kernel.pad(padding)
           let ih=kernel.shape[0]
@@ -396,6 +445,14 @@ class NN{
           return new dim.Vector(a)
       })
     }))
+    if (input.requiresGrad){
+      rst.requiresGrad=true
+      let leftFn,rightFn
+      leftFn=input.gradFn
+      rightFn=new grad.Constant(ks)
+      rst.gradFn=grad.Operate.wrapper(leftFn,rightFn,"avgPool2d")
+    }
+    return rst
   }
   maxPool3d(){}
   avgPool3d(){}
@@ -418,7 +475,7 @@ class NN{
   avgUnpool1d(input,ks){
     let rst= new dim.Vector(input.data.map((channel,ci)=>{
       return new dim.Vector(channel.data.map((kernel,ki)=>{
-          let factor = dim.fill(1/ks/ks,[ks,ks])
+          let factor = dim.fill(1/ks,ks)
           return dim.kron(kernel,factor,false)
       }))
     }))

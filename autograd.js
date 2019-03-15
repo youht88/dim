@@ -59,7 +59,9 @@ class Constant extends Autograd{
   }
   expression(){
     if (typeof this.data=="number") return this.data
-    return JSON.stringify(this.data.value)
+    let rst=JSON.stringify(this.data.value)
+    if (rst.length>10) return `Data[${this.data.shape.join('*')}]` 
+    else return rst
   }
   gradExpression(){
     return Object.entries(this._grads).map(entry=>{
@@ -154,15 +156,14 @@ class Variable extends Autograd{
   }
 }
 class Operate extends Autograd{
-  constructor(left,right=null,operate,name){
+  constructor(left,right=null,operate,args,name){
     super()
     if (typeof left=="number") this.left = new Constant(left)
     else this.left = left
     if (typeof right == "number") this.right = new Constant(right)
     else this.right = right
-    
-    if (!name) name = "op"+Math.random().toString().slice(-6)
-    this.name=name
+    this.args = args
+    this.name = name || "op"+Math.random().toString().slice(-6)
     
     this.operate = operate
     this.type = "Operate"
@@ -405,6 +406,66 @@ class Operate extends Autograd{
         break;
       }case "crossEntropyDeri":{
         return new Constant(this.eval())
+      }case "conv1d":{
+        let part1,part2,part3
+        let dLeft=Operate.wrapper(prevOp,this.right,"convTranspose1d",this.args)
+        let temp1 = prevOp.eval().swapaxes(0,1)
+        let temp2 = this.left.eval().swapaxes(0,1)
+        let temp3 = dim.nn.conv1d(temp2,temp1)
+        let dRight = new Constant(temp3.swapaxes(0,1))
+        if (this.left.name==partial.name){
+          part1 = dLeft
+          part2=this.right.partialGradient(partial,dRight)
+        }else if (this.right.name==partial.name) {
+          part1 = dRight
+          part2=this.left.partialGradient(partial,dLeft)
+        }else{
+          part1=this.left.partialGradient(partial,dLeft)
+          part2=this.right.partialGradient(partial,dRight)
+        }
+        part3=Operate.wrapper(part1,part2,"add")
+        rst = part3
+        break;
+      }case "conv2d":{
+        let part1,part2,part3
+        let dLeft=Operate.wrapper(prevOp,this.right,"convTranspose2d",this.args)
+        let temp1 = prevOp.eval().swapaxes(0,1)
+        let temp2 = this.left.eval().swapaxes(0,1)
+        let temp3 = dim.nn.conv2d(temp2,temp1)
+        let dRight = new Constant(temp3.swapaxes(0,1))
+        if (this.left.name==partial.name){
+          part1 = dLeft
+          part2=this.right.partialGradient(partial,dRight)
+        }else if (this.right.name==partial.name) {
+          part1 = dRight
+          part2=this.left.partialGradient(partial,dLeft)
+        }else{
+          part1=this.left.partialGradient(partial,dLeft)
+          part2=this.right.partialGradient(partial,dRight)
+        }
+        part3=Operate.wrapper(part1,part2,"add")
+        rst = part3
+        break;
+      }case "avgPool1d":{
+        let part1 = Operate.wrapper(prevOp,this.right.eval(),"avgUnpool1d")
+        let part2 = this.left.partialGradient(partial,part1)
+        rst = part2       
+        break;
+      }case "maxPool1d":{
+        let part1 = Operate.wrapper(prevOp,this.right.eval(),"maxUnpool1d",this.args)
+        let part2 = this.left.partialGradient(partial,part1)
+        rst = part2       
+        break;
+      }case "avgPool2d":{
+        let part1 = Operate.wrapper(prevOp,this.right.eval(),"avgUnpool2d")
+        let part2 = this.left.partialGradient(partial,part1)
+        rst = part2       
+        break;
+      }case "maxPool2d":{
+        let part1 = Operate.wrapper(prevOp,this.right.eval(),"maxUnpool2d",this.args)
+        let part2 = this.left.partialGradient(partial,part1)
+        rst = part2       
+        break;
       }default:{
         throw new Error(`${this.operate}是不正确的operate`)   
       }
@@ -502,6 +563,18 @@ class Operate extends Autograd{
       }case "crossEntropyDeri":{rst = "crossEntropyDeri("+this.left.expression()+","+this.right.expression()+")";break;
       }case "T":{rst = "T("+this.left.expression()+")";break;
       }case "tr":{rst = "tr("+this.left.expression()+")";break;
+      }case "conv1d":{rst = "conv1d("+this.left.expression()+","+this.right.expression()+")";break;
+      }case "convTranspose1d":{rst = "convTranspose1d("+this.left.expression()+","+this.right.expression()+")";break;
+      }case "conv2d":{rst = "conv2d("+this.left.expression()+","+this.right.expression()+")";break;
+      }case "convTranspose2d":{rst = "convTranspose2d("+this.left.expression()+","+this.right.expression()+")";break;
+      }case "avgPool1d":{rst = "avgPool1d("+this.left.expression()+","+this.right.expression()+")";break;
+      }case "avgUnpool1d":{rst = "avgUnpool1d("+this.left.expression()+","+this.right.expression()+")";break;
+      }case "maxPool1d":{rst = "maxPool1d("+this.left.expression()+","+this.right.expression()+")";break;
+      }case "maxUnpool1d":{rst = "maxUnpool1d("+this.left.expression()+","+this.right.expression()+")";break;
+      }case "avgPool2d":{rst = "avgPool2d("+this.left.expression()+","+this.right.expression()+")";break;
+      }case "avgUnpool2d":{rst = "avgUnpool2d("+this.left.expression()+","+this.right.expression()+")";break;
+      }case "maxPool2d":{rst = "maxPool2d("+this.left.expression()+","+this.right.expression()+")";break;
+      }case "maxUnpool2d":{rst = "maxUnpool2d("+this.left.expression()+","+this.right.expression()+")";break;
       }default:{
         rst = `${this.operate}算子错误`
       }
@@ -510,7 +583,7 @@ class Operate extends Autograd{
     return rst 
   }
   
-  static wrapper(left,right,operate){
+  static wrapper(left,right,operate,args,name){
     if (operate=="mul"){
       if (left.type=="Constant" && left.data==0) return new Constant(0)
       if (right.type=="Constant" && right.data==0) return new Constant(0)
@@ -541,9 +614,9 @@ class Operate extends Autograd{
       if (left.type=="Constant" && left.data==1) return new Constant(1)
     }
     if (operate=="tr"){
-      if (left.type=="Operate" && left.left.type=="Operate" && left.left.operate=="T") return new Operate(left.left,null,"tr")
+      if (left.type=="Operate" && left.left.type=="Operate" && left.left.operate=="T") return new Operate(left.left,null,"tr",args,name)
     }
-    return new Operate(left,right,operate)
+    return new Operate(left,right,operate,args,name)
   }
   eval(){
     if (this.catch && this._data !=null) return this._data
@@ -593,6 +666,24 @@ class Operate extends Autograd{
       case "mseLoss":{rst=dim.nn.mseLoss(this.left.eval(),this.right.eval());break}
       case "crossEntropy":{rst=dim.nn.crossEntropy(this.left.eval(),this.right.eval());break}
       case "crossEntropyDeri":{rst=dim.nn.crossEntropyDeri(this.left.eval(),this.right.eval());break}
+      case "conv1d":{rst=dim.nn.conv1d(this.left.eval(),this.right.eval());break}
+      case "convTranspose1d":{
+        rst=dim.nn.convTranspose1d(this.left.eval(),this.right.eval(),1,this.args.padding)
+        break;
+      }
+      case "conv2d":{rst=dim.nn.conv2d(this.left.eval(),this.right.eval());break}
+      case "convTranspose2d":{
+        rst=dim.nn.convTranspose2d(this.left.eval(),this.right.eval(),1,this.args.padding)
+        break;
+      }
+      case "avgPool1d":{rst=dim.nn.avgPool1d(this.left.eval(),this.right.eval());break}
+      case "avgUnpool1d":{rst=dim.nn.avgUnpool1d(this.left.eval(),this.right.eval());break}
+      case "maxPool1d":{rst=dim.nn.maxPool1d(this.left.eval(),this.right.eval());break}
+      case "maxUnpool1d":{rst=dim.nn.maxUnpool1d(this.left.eval(),this.args.indices,this.right.eval());break}
+      case "avgPool2d":{rst=dim.nn.avgPool2d(this.left.eval(),this.right.eval());break}
+      case "avgUnpool2d":{rst=dim.nn.avgUnpool2d(this.left.eval(),this.right.eval());break}
+      case "maxPool2d":{rst=dim.nn.maxPool2d(this.left.eval(),this.right.eval());break}
+      case "maxUnpool2d":{rst=dim.nn.maxUnpool2d(this.left.eval(),this.args.indices,this.right.eval());break}
       default:{
         throw new Error(`unknown operate {${this.operate}}`)  
       }
