@@ -615,7 +615,7 @@ class Vector{
     else if (this.isNumber(a)) n=a
     if (this.dtype == Complex)
       return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.eq(n==undefined?a.data[i]:n):x.eq(n==undefined?a.data[i]:n)))
-    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.eq(n==undefined?a.data[i]:n):x=(n==undefined?a.data[i]:n)?true:false),Boolean)
+    return new Vector(this.data.map((x,i)=>(x instanceof Vector)?x.eq(n==undefined?a.data[i]:n):x==(n==undefined?a.data[i]:n)?true:false),Boolean)
   }
   ne(a){
     a=this.ensureSameShape(a)

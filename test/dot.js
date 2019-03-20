@@ -1,4 +1,4 @@
-dim=require('./dim.js').dim
+dim=require('../dim.js').dim
 a=dim.arange(2000).reshape(500,4)
 a.setGrad()
 b=dim.arange(200).reshape(4,50)

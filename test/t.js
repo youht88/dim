@@ -1,0 +1,10 @@
+dim = require('../dim.js').dim
+a=dim.array([[1,2,3],[4,5,6]])
+a.setGrad()
+b=dim.array([[1,2],[3,4],[5,6]])
+b.setGrad()
+c=dim.array([[1,2,1],[3,4,1]])
+c.setGrad()
+m1=b.mul(a.T)
+m1.print()
+m1.expression()

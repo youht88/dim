@@ -1,4 +1,4 @@
-dim = require('./dim.js').dim
+dim = require('../dim.js').dim
 x=dim.random.random(50,5)
 //x=setGrad()
 w1=dim.random.random(5,4)

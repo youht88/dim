@@ -7,9 +7,7 @@ class NN{
     this.grad = grad
     this.Vector = dim.Vector
     this.random=new Random(dim)
-  }
-  Linear(input,outFeatures,bias){
-    return new Linear(input,outFeatures,bias)
+    this.Module = Module
   }
   //Classification Function
   softmax(x,axis){x=this.dim.ensureVector(x);return x.softmax(axis)}
@@ -513,22 +511,190 @@ class NN{
   }
   maxUnpool3d(){}
   avgUnpool3d(){}
+
+  Module1(moduleClass){return new moduleClass()}
+  Sequential(...modules){return new Sequential(...modules)}
+  Linear(inF,outF,bias){return new Linear(inF,outF,bias)}
+  ReLU(){return new ReLU()}
+  Conv2d(inChannels,outChannels,kernelSize,stride=1,padding=0,bias=false){
+    return new Conv2d(inChannels,outChannels,kernelSize,stride,padding,bias)
+  }  
+  MaxPool2d(ks,padding=0){return new MaxPool2d(ks,padding=0)}
+  CrossEntropyLoss(){return new CrossEntropyLoss()}  
+  MSELoss(){return new MSELoss()}  
 }
 class Module{
+  constructor(){
+    this.moduleList=[]
+    this.eps=1e-5
+  }
+  addModule(name,module){
+    if (module==undefined) {
+      module=name    
+      name = this.count.toString()
+    }
+    this.moduleList.push({name:name,module:module})
+    this.count=this.moduleList.length
+  }
+  flatten(data,item){
+    if (!item) item=[]
+    data.map((x,i)=>{
+      return Array.isArray(x)?this.flatten(x,item):item.push(x)
+    })
+    return item
+  }
+  print(){
+    let str
+    str=`Sequential(\n`
+    str=str+this.moduleList.map(x=>`(${x.name}): ${x.module.print()}`).join('\n')
+    str=str+`\n)`
+    console.log(str)
+  }
+  modules(){
+    let rst= this.moduleList.map((x,i)=>{
+      if (x.module.moduleList.length!=0) return x.module.modules()
+      return x.module
+    }).filter(y=>y!=undefined)
+    return this.flatten(rst)
+  }
+  parameters(){ 
+    let rst= this.moduleList.map(x=>{
+      if (x.module.moduleList.length!=0) return x.module.parameters()
+      return x.module.params
+    }).filter(y=>y!=undefined)
+    return this.flatten(rst)
+  }
+  forward(){console.log("must implement this function")}
+}
+class Sequential extends Module{
+  constructor(...modules){
+    super()
+    this.moduleList = modules.map((x,i)=>{return {name:i.toString(),module:x}})
+    this.count=this.moduleList.length
+  }
+  forward(x){
+    this.moduleList.map((a,i)=>{
+      x=a.module.forward(x)
+    })
+    return x
+  }
+  print(){
+    let str
+    str=`Sequential(\n`
+    str=str+this.moduleList.map(x=>`(${x.name}): ${x.module.print()}`).join('\n')
+    str=str+`\n)`
+    console.log(str)
+  }
 }
 class Linear extends Module{
-  constructor(input,outF,bias=true,){
-    this.input = input
-    this.weight=dim.random.random(input.shape[1],outF)
-    this.weight.setGrad()
-    if (bias){
-      this.bias=dim.random.random(input.shape[0],outF)
-      this.bias.setGrad()
-    }
+  constructor(inF,outF,bias=true,){
+    super()
+    this.in = inF
+    this.out = outF
+    this.bias = bias
+    this.params=[]
   }
-  forward(){
-    if (this.bias) return this.input.dot(this.weight).add(this.bias)
-    return this.input.dot(this.weight)
+  forward(input){
+    if (input.shape[1]!=this.in||input.ndim!=2) throw new Error(`参数[${input.shape}]不符合要求${this.in},${input.ndim}`)
+    this.input=input
+    if (this.weight==undefined){
+      this.weight=dim.random.random(this.input.shape[1],this.out)
+      this.weight.setGrad()
+      this.params.push(this.weight)
+    }
+    if (this.B==undefined && this.bias){
+      this.B=dim.random.random(this.input.shape[0],this.out)
+      this.B.setGrad()
+      this.params.push(this.B)
+    }
+    if (this.bias) return this.input.dot(this.weight).add(this.B)
+    return this.input.dot(this.weight)    
+  }
+  print(){
+    return `Linear(in_features=${this.in}, out_features=${this.out}, bias=${this.bias})`
+  }
+}
+class ReLU extends Module{
+  constructor(){
+    super()
+  }
+  forward(x){
+    return dim.nn.relu(x)
+  }
+  print(){
+    return `ReLu()`
+  }
+}
+class Conv2d extends Module{
+  constructor(inChannels,outChannels,kernelSize,stride=1,padding=0,bias=false){
+    super()
+    this.inChannels = inChannels
+    this.outChannels = outChannels
+    this.kernelSize = kernelSize
+    this.stride=stride
+    this.padding = padding
+    this.bias = bias
+    this.params=[]
+  }
+  forward(input){
+    this.Input=input
+    if (this.Filter==undefined){
+      this.Filter=dim.random.random(this.outChannels,this.inChannels,
+                                    this.kernelSize,this.kernelSize)
+      this.Filter.setGrad()
+      this.params.push(this.Filter)
+    }
+    if (this.B==undefined && this.bias){
+      this.B=dim.random.random(input.shape[0],this.outChannels,this.kernelSize)
+      this.B.setGrad()
+      this.params.push(this.B)
+    }
+    if (this.bias) return dim.nn.conv2d(this.Input,this.Filter,this.stride,this.padding).add(this.B)
+    return dim.nn.conv2d(this.Input,this.Filter,this.stride,this.padding)
+  }
+  print(){
+    return `Conv2d(inChannels=${this.inChannels}, outChannels=${this.outChannels}, kernelSize=${this.kernelSize},stride=${this.stride},padding=${this.padding},bias=${this.bias})`
+  }
+}
+
+class MaxPool2d extends Module{
+  constructor(ks,padding){
+    super()
+    this.ks= ks
+    this.indices = []
+    this.padding = padding
+    this.params=[]
+  }
+  forward(x){
+    this.X=x
+    this.result = dim.nn.maxPool2d(x,this.ks,this.indices,this.padding)
+    return this.result
+  }
+  print(){
+    return `MaxPool2d(kernelSize=${this.ks}, padding=${this.padding})`
+  }
+}
+
+class CrossEntropyLoss extends Module{
+  constructor(){
+    super()
+  }
+  forward(x,y){
+    return dim.nn.crossEntropy(x,y)
+  }
+  print(){
+    return `CrossEntropyLoss()`
+  }
+}
+class MSELoss extends Module{
+  constructor(){
+    super()
+  }
+  forward(x,y){
+    return dim.nn.mseLoss(x,y)
+  }
+  print(){
+    return `MSELoss()`
   }
 }
 
@@ -578,4 +744,3 @@ class Adam extends Optimizer{
 }
 exports.NN = NN
 exports.Optimizer = Optimizer
-exports.Module = Module
